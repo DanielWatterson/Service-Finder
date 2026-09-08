@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express'
 import { supabase } from '../config/supabase'
+import { fetchServiceDetails } from '../models/Service'
 
 export async function getServices(req: Request, res: Response, next: NextFunction) {
 	try {
@@ -19,6 +20,21 @@ export async function getServices(req: Request, res: Response, next: NextFunctio
 		if (error) throw error
 
 		res.json(data ?? [])
+	} catch (error) {
+		next(error)
+	}
+}
+
+export async function getServiceDetails(req: Request, res: Response, next: NextFunction) {
+	try {
+		const service = await fetchServiceDetails(req.params.externalId)
+
+		if (!service) {
+			res.status(404).json({ message: 'Service not found' })
+			return
+		}
+
+		res.json(service)
 	} catch (error) {
 		next(error)
 	}

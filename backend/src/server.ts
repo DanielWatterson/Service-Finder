@@ -19,6 +19,10 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 const importIntervalMs = Number(process.env.IMPORT_INTERVAL_MS || 0);
+if (process.env.AUTO_IMPORT_SERVICES === 'true') {
+	importServices().catch((error) => console.error('[import] initial import failed', error));
+}
+
 if (importIntervalMs > 0) {
 	setInterval(() => {
 		importServices().catch((error) => console.error('[import] failed', error));
