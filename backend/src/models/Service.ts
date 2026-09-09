@@ -50,3 +50,37 @@ export async function fetchServicesInRadius(
 
     return (data ?? []) as ServiceDetails[]
 }
+
+export async function updateServiceDetails(
+    id: string,
+    updates: {
+        name?: string
+        type?: string
+        formatted_address?: string
+        location?: string
+        opening_hours?: string | null
+        website?: string | null
+        phone?: string | null
+        wheelchair?: string | null
+        sourcename?: string | null
+    }
+){
+    const { data, error } = await supabase
+    .from('services')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single()
+
+    return { data, error }
+}
+
+export async function findServiceById(id: string) {
+  const { data, error } = await supabase
+    .from('services')
+    .select('id')
+    .eq('id', id)
+    .single()
+
+  return { data, error }
+}
