@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { importServices } from '../api/geoapify/client'
 import { requireAdminImportToken } from '../middleware/adminImportAuth'
+import { backfillServiceCategories } from '../services/categoryService'
 
 const router = Router()
 
@@ -13,6 +14,15 @@ router.post('/import/services', requireAdminImportToken, async (_req, res, next)
     next(error)
   }
   
+})
+
+router.post('/sync/service-categories', requireAdminImportToken, async (_req, res, next) => {
+  try {
+    const updated = await backfillServiceCategories()
+    res.json({ updated })
+  } catch (error) {
+    next(error)
+  }
 })
 
 export default router

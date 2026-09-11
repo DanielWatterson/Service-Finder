@@ -5,6 +5,13 @@ export interface ServiceDetails {
     external_id: string
     name: string
     type: string
+    category_id: string | null
+    category?: {
+        id: string
+        name: string
+        slug: string
+        parent_id: string | null
+    } | null
     formatted_address: string
     location: string
     opening_hours: string | null
@@ -24,7 +31,7 @@ export async function fetchServiceDetails(externalId: string): Promise<ServiceDe
 
     const { data, error } = await supabase
         .from('services')
-        .select('id,external_id,name,type,formatted_address,location,opening_hours,website,phone,wheelchair,sourcename,imported_at')
+        .select('id,external_id,name,type,category_id,category:service_categories(id,name,slug,parent_id),formatted_address,location,opening_hours,website,phone,wheelchair,sourcename,imported_at')
         .eq('external_id', normalizedExternalId)
         .maybeSingle()
 

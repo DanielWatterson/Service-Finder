@@ -11,9 +11,12 @@ export async function getServices(req: Request, res: Response, next: NextFunctio
 			? Math.min(Math.max(requestedLimit, 1), 500)
 			: 100
 
-		let query = supabase.from('services').select('*').limit(limit)
+		let query = supabase
+			.from('services')
+			.select('*, category:service_categories(id,name,slug,parent_id)')
+			.limit(limit)
 
-		if (type) query = query.eq('type', type)
+		if (type) query = query.eq('category.slug', type)
 		if (search) query = query.ilike('name', `%${search}%`)
 
 		const { data, error } = await query
