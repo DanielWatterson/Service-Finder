@@ -6,6 +6,8 @@ setRateLimit('tomtom', 10, 60_000)
 
 
 const tomtomUrl = requireEnv('TOMTOM_URL', process.env.TOMTOM_URL)
+const tomtomBbox = process.env.TOMTOM_BBOX ?? '18.35,-34.35,19.00,-33.75'
+const incidentFields = '{incidents{type,geometry{type,coordinates},properties{iconCategory,magnitudeOfDelay,events{description,code,iconCategory},from,to,length,delay,roadNumbers,timeValidity}}}'
 
 export function tomtom(key: string, format: 'json' | 'xml' = 'json') {
   return {
@@ -28,7 +30,10 @@ export async function importTrafficIncidents(
 
   try {
     const apiResponse = await tomtom(key).get<TrafficIncidentsResponse>(path, {
-      bbox: '18.35,-34.15,18.65,-33.85', // swap for whatever this endpoint actually expects
+      bbox: tomtomBbox,
+      fields: incidentFields,
+      language: 'en-GB',
+      timeValidityFilter: 'present',
     })
 
     if (!isTrafficIncidentsResponse(apiResponse)) {
