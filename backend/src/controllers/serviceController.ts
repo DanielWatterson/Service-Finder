@@ -1,6 +1,5 @@
 import { NextFunction, Request, Response } from 'express'
 import { supabase } from '../config/supabase'
-
 import { fetchServiceDetails, updateServiceDetails, findServiceById } from '../models/Service'
 
 export async function getServices(req: Request, res: Response, next: NextFunction) {
