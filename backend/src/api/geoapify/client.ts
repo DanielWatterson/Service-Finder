@@ -5,7 +5,7 @@ import { ensureServiceCategories, resolveCategorySlug } from '../../services/cat
 setRateLimit('geoapify', 10, 60_000)
 
 
-const geoapifyUrl = requireEnv('GEOAPIFY_URL', process.env.GEOAPIFY_URL)
+const geoapifyUrl = process.env.GEOAPIFY_URL || 'https://api.geoapify.com/v2/places'
 
 export function geopaify(key: string, format: 'json' | 'xml' = 'json' ) {
   return {
