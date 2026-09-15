@@ -7,82 +7,77 @@ import Dashboard from './pages/Dashboard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
-  BookOpen, Bookmark, Bus, Clock3, Flame, GraduationCap, Heart, Hospital,
-  House, Landmark, Library, LocateFixed, MapPinned, Minus, Navigation,
-  Phone, Pill, Plus, Search, Shield, ShoppingBag, Smile, Stethoscope, X,
+  Accessibility, BookOpen, Bookmark, Bus, Clock3, Flame, Globe,
+  GraduationCap, Heart, Hospital, House, Landmark, Library, LocateFixed,
+  MapPinned, Minus, Navigation, Phone, Pill, Plus, Search, Shield,
+  ShoppingBag, Smile, Stethoscope, X,
 } from 'lucide-react';
 import Navbar from './components/common/Navbar';
+import { useServices } from './hooks/useServices';
+import type { Service } from './types/service.types';
 
 declare const L: any;
 
-type Category =
-  | 'Clinics' | 'Libraries' | 'Shelters' | 'Hospitals' | 'Police Stations'
-  | 'Pharmacies' | 'Dentists' | 'SPCA' | 'Fire Stations' | 'Home Affairs'
-  | 'Malls' | 'Transport' | 'Schools / Universities';
+type Category = string;
+type Place = Omit<Service, 'category'> & { category: Category; lat: number; lng: number };
+type CategoryItem = { name: Category; color: string };
 
-type Place = { name: string; category: Category; area: string; lat: number; lng: number };
+const categoryColors = ['#b94b3c', '#4f876f', '#cb8c38', '#3b77a2', '#375f93', '#81528d', '#77909c', '#815c54', '#bd6240', '#75664b', '#a45b83', '#847337', '#43858a'];
+const categoryColor = (category: string) =>
+  categoryColors[Math.max(category.length - 1, 0) % categoryColors.length];
 
-const categories: { name: Category; symbol: string; color: string }[] = [
-  { name: 'Clinics',                symbol: '+',  color: '#b94b3c' },
-  { name: 'Libraries',              symbol: '▮',  color: '#4f876f' },
-  { name: 'Shelters',               symbol: '⌂',  color: '#cb8c38' },
-  { name: 'Hospitals',              symbol: '+',  color: '#3b77a2' },
-  { name: 'Police Stations',        symbol: '●',  color: '#375f93' },
-  { name: 'Pharmacies',             symbol: '●',  color: '#81528d' },
-  { name: 'Dentists',               symbol: '●',  color: '#77909c' },
-  { name: 'SPCA',                   symbol: '♥',  color: '#815c54' },
-  { name: 'Fire Stations',          symbol: '♦',  color: '#bd6240' },
-  { name: 'Home Affairs',           symbol: '▦',  color: '#75664b' },
-  { name: 'Malls',                  symbol: '●',  color: '#a45b83' },
-  { name: 'Transport',              symbol: '▰',  color: '#847337' },
-  { name: 'Schools / Universities', symbol: '◆',  color: '#43858a' },
-];
+const getCoordinates = (location: Service['location']): [number, number] | null => {
+  if (location && typeof location === 'object' && location.coordinates) return location.coordinates;
+  if (typeof location !== 'string') return null;
+  const match = location.match(/(?:SRID=\d+;)?\s*POINT\s*\(\s*(-?[\d.]+)\s+(-?[\d.]+)\s*\)/i);
+  if (match) return [Number(match[1]), Number(match[2])];
 
-const places: Place[] = ([
-  ['Cape Town Civic Centre',     'Home Affairs',           'Cape Town',       -33.925, 18.424],
-  ['Groote Schuur Hospital',     'Hospitals',              'Observatory',     -33.941, 18.465],
-  ['Sea Point Police Station',   'Police Stations',        'Sea Point',       -33.918, 18.386],
-  ['Cape Town Central Library',  'Libraries',              'CBD',             -33.925, 18.423],
-  ['Woodstock Clinic',           'Clinics',                'Woodstock',       -33.927, 18.448],
-  ['Mowbray Maternity Hospital', 'Hospitals',              'Mowbray',         -33.948, 18.475],
-  ['Rondebosch Library',         'Libraries',              'Rondebosch',      -33.961, 18.476],
-  ['Khayelitsha Mall',           'Malls',                  'Khayelitsha',     -34.037, 18.678],
-  ['Mitchells Plain Clinic',     'Clinics',                'Mitchells Plain', -34.048, 18.617],
-  ['Bellville Police Station',   'Police Stations',        'Bellville',       -33.900, 18.628],
-  ['Tygerberg Hospital',         'Hospitals',              'Parow',           -33.908, 18.596],
-  ['Milnerton Library',          'Libraries',              'Milnerton',       -33.879, 18.496],
-  ['Hout Bay Fire Station',      'Fire Stations',          'Hout Bay',        -34.044, 18.348],
-  ['Wynberg SPCA',               'SPCA',                   'Wynberg',         -34.003, 18.468],
-  ['Claremont Transport Hub',    'Transport',              'Claremont',       -33.981, 18.465],
-  ['UCT',                        'Schools / Universities', 'Rondebosch',      -33.957, 18.461],
-  ['Table View Shelter',         'Shelters',               'Table View',      -33.824, 18.488],
-  ['Kloof Street Pharmacy',      'Pharmacies',             'Gardens',         -33.932, 18.410],
-] as [string, Category, string, number, number][]).map(([name, category, area, lat, lng]) => ({
-  name, category, area, lat, lng,
-}));
+  if (!/^[0-9a-f]+$/i.test(location) || location.length < 34) return null;
+  const bytes = new Uint8Array(location.match(/.{2}/g)!.map((pair) => parseInt(pair, 16)));
+  const littleEndian = bytes[0] === 1;
+  const view = new DataView(bytes.buffer);
+  const geometryType = view.getUint32(1, littleEndian);
+  const coordinateOffset = 5 + (geometryType & 0x20000000 ? 4 : 0);
+  if ((geometryType & 0xff) !== 1 || bytes.length < coordinateOffset + 16) return null;
+  return [
+    view.getFloat64(coordinateOffset, littleEndian),
+    view.getFloat64(coordinateOffset + 8, littleEndian),
+  ];
+};
+
+const toPlace = (service: Service): Place | null => {
+  const coordinates = getCoordinates(service.location);
+  if (!coordinates || coordinates.some((coordinate) => !Number.isFinite(coordinate))) return null;
+  return {
+    ...service,
+    category: service.category?.name ?? service.type ?? 'Service',
+    lat: coordinates[1],
+    lng: coordinates[0],
+  };
+};
 
 const categoryIcon = (category: Category, size = 14) => {
   const props = { size, strokeWidth: 2.2 };
   switch (category) {
-    case 'Clinics':                return <Stethoscope {...props} />;
-    case 'Libraries':              return <Library {...props} />;
-    case 'Shelters':               return <House {...props} />;
-    case 'Hospitals':              return <Hospital {...props} />;
-    case 'Police Stations':        return <Shield {...props} />;
-    case 'Pharmacies':             return <Pill {...props} />;
-    case 'Dentists':               return <Smile {...props} />;
-    case 'SPCA':                   return <Heart {...props} />;
-    case 'Fire Stations':          return <Flame {...props} />;
-    case 'Home Affairs':           return <Landmark {...props} />;
-    case 'Malls':                  return <ShoppingBag {...props} />;
-    case 'Transport':              return <Bus {...props} />;
-    case 'Schools / Universities': return <GraduationCap {...props} />;
-    default:                       return null;
+    case 'Clinic':         return <Stethoscope    {...props} />;
+    case 'Library':        return <Library        {...props} />;
+    case 'Shelter':        return <House          {...props} />;
+    case 'Hospital':       return <Hospital       {...props} />;
+    case 'Police station': return <Shield         {...props} />;
+    case 'Pharmacy':       return <Pill           {...props} />;
+    case 'Dentist':        return <Smile          {...props} />;
+    case 'Fire station':   return <Flame          {...props} />;
+    case 'Home Affairs':   return <Landmark       {...props} />;
+    case 'School':         return <GraduationCap  {...props} />;
+    default:               return <MapPinned      {...props} />;
   }
 };
 
-function LeafletMap({ places, onSelect, mapRef }: {
+function LeafletMap({
+  places, selected, onSelect, mapRef,
+}: {
   places: Place[];
+  selected: Place | null;
   onSelect: (place: Place) => void;
   mapRef: React.MutableRefObject<any>;
 }) {
@@ -91,119 +86,204 @@ function LeafletMap({ places, onSelect, mapRef }: {
 
   useEffect(() => {
     if (!root.current || !L) return;
-    const map = L.map(root.current, { zoomControl: false }).setView([-33.96, 18.50], 11);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+    const map = L.map(root.current, { zoomControl: false, attributionControl: true })
+      .setView([-33.96, 18.5], 11);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap contributors',
+    }).addTo(map);
     mapRef.current = map;
     layer.current = L.layerGroup().addTo(map);
+    // Force Leaflet to recalculate size once the flex layout settles
+    setTimeout(() => map.invalidateSize(), 0);
     return () => map.remove();
   }, [mapRef]);
 
   useEffect(() => {
     if (!layer.current) return;
     layer.current.clearLayers();
-    places.forEach(place => {
-      const item = categories.find(c => c.name === place.category)!;
+    places.forEach((place) => {
+      const color = categoryColor(place.category);
       const icon = L.divIcon({
         className: 'cape-marker-wrap',
-        html: `<div class="cape-marker" style="--marker:${item.color}"><span>${renderToStaticMarkup(categoryIcon(place.category))}</span></div>`,
+        html: `<div class="cape-marker" style="--marker:${color}"><span>${renderToStaticMarkup(categoryIcon(place.category, 14))}</span></div>`,
         iconSize: [34, 42],
         iconAnchor: [17, 42],
       });
-      L.marker([place.lat, place.lng], { icon })
-        .addTo(layer.current)
-        .bindTooltip(`<strong>${place.name}</strong><br>${place.category}`, { direction: 'top' })
-        .on('click', () => onSelect(place));
+      const marker = L.marker([place.lat, place.lng], { icon }).addTo(layer.current);
+      marker.bindTooltip(`<strong>${place.name}</strong><br>${place.category}`, { direction: 'top', offset: [0, -38] });
+      marker.on('click', () => onSelect(place));
     });
-  }, [places, onSelect]);
+    if (places.length > 0) {
+      mapRef.current?.fitBounds(
+        L.latLngBounds(places.map((place) => [place.lat, place.lng])),
+        { padding: [48, 48], maxZoom: 12 },
+      );
+    }
+  }, [places, selected, onSelect]);
 
   return <div className="leaflet-map" ref={root} />;
 }
 
 function CapeGuide() {
-  const [query, setQuery] = useState('');
-  const [active, setActive] = useState<Category | null>(null);
-  const [selected, setSelected] = useState<Place | null>(null);
-  const [legendOpen, setLegendOpen] = useState(false);
-  const mapRef = useRef<any>(null);
+  const { services,   loading, error } = useServices();
+  const [query,       setQuery] =       useState('');
+  const [active,      setActive] =      useState<Category | null>(null);
+  const [selected,    setSelected] =    useState<Place | null>(null);
+  const [notice,      setNotice] =      useState('');
+  const [aboutOpen,   setAboutOpen] =   useState(false);
+  const [legendOpen,  setLegendOpen] =  useState(false);
+  const [saved,       setSaved] =       useState<string[]>([]);
+  const mapRef =      useRef<any>(null);
+
+  const places = useMemo(
+    () => services.map(toPlace).filter((place): place is Place => place !== null),
+    [services],
+  );
+
+  const categories = useMemo<CategoryItem[]>(
+    () => Array.from(new Set(places.map((place) => place.category)))
+      .map((name) => ({ name, color: categoryColor(name) })),
+    [places],
+  );
 
   const visible = useMemo(
-    () => places.filter(p =>
+    () => places.filter((p) =>
       (!active || p.category === active) &&
-      `${p.name} ${p.area} ${p.category}`.toLowerCase().includes(query.toLowerCase())),
-    [active, query],
+      `${p.name} ${p.formatted_address ?? ''} ${p.category}`.toLowerCase().includes(query.toLowerCase()),
+    ),
+    [active, places, query],
   );
 
   const selectPlace = useCallback((place: Place) => {
     setSelected(place);
-    mapRef.current?.flyTo([place.lat, place.lng], 15);
+    mapRef.current?.flyTo([place.lat, place.lng], 15, { animate: true, duration: 0.7 });
   }, []);
 
-return (
-  <main className="guide-shell">
-    <Navbar />
+  const search = () => {
+    const first = visible[0];
+    if (first) selectPlace(first);
+    setNotice(first ? `${visible.length} place${visible.length === 1 ? '' : 's'} found` : 'No places found');
+  };
 
-    <div className="map-stage">
-      <LeafletMap places={visible} onSelect={selectPlace} mapRef={mapRef} />
+  const locate = () => navigator.geolocation?.getCurrentPosition(
+    (pos) => {
+      mapRef.current?.flyTo([pos.coords.latitude, pos.coords.longitude], 14);
+      setNotice('Showing your current location.');
+    },
+    () => setNotice('We could not access your location.'),
+  );
 
-      <header className="masthead">
-        <h1>The Cape Guide</h1>
-        <p>Find. Navigate. Connect.</p>
-      </header>
+  return (
+    <main className="guide-shell">
+      <Navbar />
 
-      <section className="search-panel">
-        <span className="glass"><Search size={19} /></span>
-        <input
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          placeholder="Search for a place or service..."
-        />
-        <button className="locate" onClick={() => navigator.geolocation?.getCurrentPosition(
-          pos => mapRef.current?.flyTo([pos.coords.latitude, pos.coords.longitude], 14),
-        )}>
-          <LocateFixed size={17} />
-        </button>
-      </section>
-    </div>
-      {selected && (
-        <section className="service-popup">
-          <button className="service-close" onClick={() => setSelected(null)}><X size={18} /></button>
-          <div className="service-title">
-            <span className="service-icon" style={{ background: categories.find(c => c.name === selected.category)?.color }}>
-              {categoryIcon(selected.category, 18)}
-            </span>
-            <div><h2>{selected.name}</h2><p>{selected.category}</p></div>
-          </div>
-          <div className="service-info">
-            <p><MapPinned size={17} />{selected.area}, Cape Town</p>
-            <p><Clock3 size={17} />{selected.category === 'Hospitals' ? 'Open 24 hours' : '08:00 – 16:30'}</p>
-            <p><Phone size={17} />021 400 0000</p>
-          </div>
+      <div className="map-stage">
+        <LeafletMap places={visible} selected={selected} onSelect={selectPlace} mapRef={mapRef} />
+
+        <header className="masthead">
+          <h1>The Cape Guide</h1>
+          <p>Find. Navigate. Connect.</p>
+        </header>
+
+        <section className="search-panel">
+          <span className="glass"><Search size={19} /></span>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && search()}
+            placeholder="Search for a place or service..."
+          />
+          <button className="search-button" onClick={search}>Search</button>
+          <button className="locate" title="Use my location" onClick={locate}>
+            <LocateFixed size={17} />
+          </button>
         </section>
-      )}
 
-      <button className="panel-trigger legend-trigger" onClick={() => setLegendOpen(true)}>
-        <MapPinned size={17} />Legend
-      </button>
+        {loading && <div className="notice">Loading services...</div>}
+        {error && <div className="notice">{error}</div>}
+        {notice && !loading && <div className="notice">{notice}</div>}
 
-      {legendOpen && (
-        <aside className="legend popup-panel">
-          <button className="close-panel" onClick={() => setLegendOpen(false)}><X size={17} /></button>
-          <h2>Legend</h2>
-          {categories.map(item => (
-            <button
-              key={item.name}
-              className={active === item.name ? 'active' : ''}
-              onClick={() => { setActive(active === item.name ? null : item.name); setSelected(null); }}
-            >
-              <i style={{ background: item.color }}>{categoryIcon(item.name)}</i>{item.name}
+        {selected && (
+          <section className="service-popup">
+            <button className="service-close" aria-label="Close service" onClick={() => setSelected(null)}>
+              <X size={18} />
             </button>
-          ))}
-        </aside>
-      )}
+            <div className="service-title">
+              <span className="service-icon" style={{ background: categories.find((c) => c.name === selected.category)?.color }}>
+                {categoryIcon(selected.category, 18)}
+              </span>
+              <div>
+                <h2>{selected.name}</h2>
+                <p>{selected.category}</p>
+              </div>
+            </div>
+            <div className="service-info">
+              <p><MapPinned size={17} /><span>{selected.formatted_address ?? 'Address unavailable'}</span></p>
+              {selected.opening_hours && <p><Clock3 size={17} />{selected.opening_hours}</p>}
+              {selected.phone && <p><Phone size={17} />{selected.phone}</p>}
+              {selected.website && <p><Globe size={17} /><a href={selected.website} target="_blank" rel="noreferrer">Visit website</a></p>}
+              {selected.wheelchair && <p><Accessibility size={17} />Wheelchair access: {selected.wheelchair}</p>}
+            </div>
+            <div className="service-actions">
+              <button className="directions" onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${selected.lat},${selected.lng}`, '_blank', 'noopener,noreferrer')}>
+                <Navigation size={14} /> Get Directions
+              </button>
+              <button
+                className={saved.includes(selected.name) ? 'saved' : ''}
+                onClick={() => setSaved(saved.includes(selected.name) ? saved.filter((name) => name !== selected.name) : [...saved, selected.name])}
+              >
+                <Bookmark size={15} /> {saved.includes(selected.name) ? 'Saved' : 'Save'}
+              </button>
+            </div>
+          </section>
+        )}
 
-      <div className="leaflet-zoom">
-        <button onClick={() => mapRef.current?.zoomIn()}><Plus size={18} /></button>
-        <button onClick={() => mapRef.current?.zoomOut()}><Minus size={18} /></button>
+        <button className="panel-trigger about-trigger" onClick={() => setAboutOpen(true)}>
+          <BookOpen size={17} /> About the Guide
+        </button>
+        <button className="panel-trigger legend-trigger" onClick={() => setLegendOpen(true)}>
+          <MapPinned size={17} /> Legend
+        </button>
+
+        {aboutOpen && (
+          <aside className="about popup-panel">
+            <button className="close-panel" aria-label="Close about" onClick={() => setAboutOpen(false)}><X size={17} /></button>
+            <h2>About the Cape<br />Guide</h2>
+            <p>
+              The Cape Guide is a map-based service finder designed to help people
+              discover useful public services across Cape Town. Search, explore
+              and navigate to the services you need — all from one map.
+            </p>
+            <div className="motto">Every road leads somewhere.<br />Every service helps someone.</div>
+          </aside>
+        )}
+
+        {legendOpen && (
+          <aside className="legend popup-panel">
+            <button className="close-panel" aria-label="Close legend" onClick={() => setLegendOpen(false)}><X size={17} /></button>
+            <h2>Legend</h2>
+            {categories.map((item) => (
+              <button
+                key={item.name}
+                className={active === item.name ? 'active' : ''}
+                onClick={() => { setActive(active === item.name ? null : item.name); setSelected(null); }}
+              >
+                <i style={{ background: item.color }}>{categoryIcon(item.name)}</i>
+                {item.name}
+              </button>
+            ))}
+            <button className="you-are" onClick={locate}>
+              <i><MapPinned size={16} /></i>
+              You Are Here
+            </button>
+          </aside>
+        )}
+
+        <div className="leaflet-zoom">
+          <button aria-label="Zoom in" onClick={() => mapRef.current?.zoomIn()}><Plus size={18} /></button>
+          <button aria-label="Zoom out" onClick={() => mapRef.current?.zoomOut()}><Minus size={18} /></button>
+        </div>
       </div>
     </main>
   );
