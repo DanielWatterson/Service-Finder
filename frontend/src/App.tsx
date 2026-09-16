@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import Navbar from './components/common/Navbar';
 import { useServices } from './hooks/useServices';
+import { getCacheDebugLog } from './db/serviceCache';
 import type { Service } from './types/service.types';
 
 declare const L: any;
@@ -94,7 +95,6 @@ function LeafletMap({
     }).addTo(map);
     mapRef.current = map;
     layer.current = L.layerGroup().addTo(map);
-    // Force Leaflet to recalculate size once the flex layout settles
     setTimeout(() => map.invalidateSize(), 0);
     return () => map.remove();
   }, [mapRef]);
@@ -134,6 +134,7 @@ function CapeGuide() {
   const [aboutOpen,   setAboutOpen] =   useState(false);
   const [legendOpen,  setLegendOpen] =  useState(false);
   const [saved,       setSaved] =       useState<string[]>([]);
+  const [debugOpen,   setDebugOpen] =   useState(true);
   const mapRef =      useRef<any>(null);
 
   const places = useMemo(
@@ -154,6 +155,30 @@ function CapeGuide() {
     ),
     [active, places, query],
   );
+
+const debugText = useMemo(() => {
+  const lines: string[] = [];
+  lines.push(`services.length: ${services.length}`);
+  lines.push(`places.length: ${places.length}`);
+  lines.push(`visible.length: ${visible.length}`);
+  lines.push(`loading: ${loading}`);
+  lines.push(`error: ${error || '(none)'}`);
+  lines.push('');
+  lines.push('--- CACHE LOG ---');
+  lines.push(getCacheDebugLog() || '(no log yet)');
+
+  if (services.length > 0) {
+    const s = services[0] as any;
+    const c = getCoordinates(s.location);
+    lines.push('');
+    lines.push('--- FIRST ROW ---');
+    lines.push(`name: ${s.name}`);
+    lines.push(`location type: ${typeof s.location}`);
+    lines.push(`location value: ${String(s.location).slice(0, 50)}`);
+    lines.push(`decoded coords: ${JSON.stringify(c)}`);
+  }
+  return lines.join('\n');
+}, [services, places, visible, loading, error]);
 
   const selectPlace = useCallback((place: Place) => {
     setSelected(place);
@@ -284,6 +309,32 @@ function CapeGuide() {
           <button aria-label="Zoom in" onClick={() => mapRef.current?.zoomIn()}><Plus size={18} /></button>
           <button aria-label="Zoom out" onClick={() => mapRef.current?.zoomOut()}><Minus size={18} /></button>
         </div>
+
+        {debugOpen && (
+          <pre
+            onClick={() => setDebugOpen(false)}
+            style={{
+              position: 'fixed',
+              bottom: 8,
+              left: 8,
+              right: 8,
+              zIndex: 99999,
+              background: 'black',
+              color: 'lime',
+              padding: 10,
+              fontSize: 11,
+              fontFamily: 'monospace',
+              border: '2px solid red',
+              whiteSpace: 'pre-wrap',
+              maxHeight: 240,
+              overflow: 'auto',
+              margin: 0,
+            }}
+          >
+            {debugText}
+            {'\n\n(tap to dismiss)'}
+          </pre>
+        )}
       </div>
     </main>
   );

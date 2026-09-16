@@ -7,11 +7,22 @@ async function request<T>(path: string, options: RequestInit): Promise<T> {
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
-      headers: { 'Content-Type': 'application/json', ...options.headers },
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
+        ...options.headers,
+      },
     });
   } catch {
     throw new Error('Unable to reach the authentication server. Start the backend and check its Supabase configuration.');
   }
+
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    const preview = await response.text();
+    throw new Error(`Expected JSON, got "${contentType}": ${preview.slice(0, 150)}`);
+  }
+
   const payload = await response.json() as T & ApiError;
   if (!response.ok) throw new Error(payload.error || 'Something went wrong.');
   return payload;

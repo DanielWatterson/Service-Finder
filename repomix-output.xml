@@ -40,8 +40,6 @@ The content is organized as follows:
 </file_summary>
 
 <directory_structure>
-.repomix/
-  bundles.json
 backend/
   src/
     api/
@@ -120,6 +118,9 @@ frontend/
         ServiceCard.tsx
     context/
       AuthContext.tsx
+    db/
+      index.ts
+      serviceCache.ts
     hooks/
       useAuth.ts
       useServices.ts
@@ -161,71 +162,70 @@ README.md
 <files>
 This section contains the contents of the repository's files.
 
-<file path=".repomix/bundles.json">
-{
-  "bundles": {
-    "Implement_Fixes-169": {
-      "name": "Implement_Fixes",
-      "created": "2026-09-14T13:51:36.830Z",
-      "lastUsed": "2026-09-14T13:51:36.830Z",
-      "tags": [],
-      "files": []
-    }
+<file path="frontend/src/db/index.ts">
+import Dexie, { type Table } from 'dexie';
+import type { Service } from '../types/service.types';
+
+export interface MetaRow {
+  key: string;
+  value: string;
+}
+
+class ServiceFinderDB extends Dexie {
+  services!: Table<Service, string>;
+  meta!: Table<MetaRow, string>;
+
+  constructor() {
+    super('servicefinder');
+    this.version(1).stores({
+      services: 'id, category_id, name',
+      meta: 'key',
+    });
   }
 }
+
+export const db = new ServiceFinderDB();
 </file>
 
-<file path="frontend/src/components/common/Navbar.tsx">
-import { Link, useNavigate } from 'react-router-dom';
-import { MapPinned, Menu, X } from 'lucide-react';
-import { useState } from 'react';
+<file path="frontend/src/db/serviceCache.ts">
+import { db } from './index';
+import { getServices } from '../services/api';
+import type { Service } from '../types/service.types';
 
-function Navbar() {
-    const navigate = useNavigate();
-    const [menuOpen, setMenuOpen] = useState(false);
-    const token = localStorage.getItem('servicefinder_access_token');
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
-    return (
-        <nav className="navbar">
-            <Link to="/" className="navbar-brand">
-                <MapPinned size={22} />
-                <span>The Cape <strong>Guide</strong></span>
-            </Link>
-
-            <button
-                className="navbar-toggle"
-                onClick={() => setMenuOpen(!menuOpen)}
-                aria-label="Toggle menu"
-            >
-                {menuOpen ? <X size={22} /> : <Menu size={22} />}
-            </button>
-
-            <div className={`navbar-links ${menuOpen ? 'open' : ''}`}>
-                <Link to="/" onClick={() => setMenuOpen(false)}>Home</Link>
-                <a href="#services" onClick={() => setMenuOpen(false)}>Services</a>
-                <a href="#about" onClick={() => setMenuOpen(false)}>About</a>
-
-                {token ? (
-                    <button
-                        className="navbar-cta"
-                        onClick={() => { setMenuOpen(false); navigate('/dashboard'); }}
-                    >
-                        Dashboard
-                    </button>
-                ) : (
-                    <button
-                        className="navbar-cta"
-                        onClick={() => { setMenuOpen(false); navigate('/login'); }}
-                    >
-                        Log In
-                    </button>
-                )}
-            </div>
-        </nav>
-    );
+async function isCacheStale(): Promise<boolean> {
+  const row = await db.meta.get('services_last_synced');
+  if (!row) return true;
+  return Date.now() - Number(row.value) > CACHE_TTL_MS;
 }
 
-export default Navbar;
+export async function refreshServicesIfStale(): Promise<boolean> {
+  if (!(await isCacheStale())) return false;
+
+  try {
+    const rows = await getServices({ limit: 500 });
+    await db.transaction('rw', db.services, db.meta, async () => {
+      await db.services.clear();
+      await db.services.bulkPut(rows);
+      await db.meta.put({ key: 'services_last_synced', value: String(Date.now()) });
+    });
+    console.log(`[cache] refreshed ${rows.length} services`);
+    return true;
+  } catch (error) {
+    console.warn('[cache] refresh failed, keeping stale cache:', error);
+    return false;
+  }
+}
+
+export async function getCachedServices(): Promise<Service[]> {
+  return db.services.toArray();
+}
+
+export async function forceRefreshServices(): Promise<void> {
+  await db.meta.delete('services_last_synced');
+  await refreshServicesIfStale();
+}
 </file>
 
 <file path="backend/src/controllers/profileController.ts">
@@ -714,6 +714,59 @@ export default AuthLayout;
 
 </file>
 
+<file path="frontend/src/components/common/Navbar.tsx">
+import { Link, useNavigate } from 'react-router-dom';
+import { MapPinned, Menu, X } from 'lucide-react';
+import { useState } from 'react';
+
+function Navbar() {
+    const navigate = useNavigate();
+    const [menuOpen, setMenuOpen] = useState(false);
+    const token = localStorage.getItem('servicefinder_access_token');
+
+    return (
+        <nav className="navbar">
+            <Link to="/" className="navbar-brand">
+                <MapPinned size={22} />
+                <span>The Cape <strong>Guide</strong></span>
+            </Link>
+
+            <button
+                className="navbar-toggle"
+                onClick={() => setMenuOpen(!menuOpen)}
+                aria-label="Toggle menu"
+            >
+                {menuOpen ? <X size={22} /> : <Menu size={22} />}
+            </button>
+
+            <div className={`navbar-links ${menuOpen ? 'open' : ''}`}>
+                <Link to="/" onClick={() => setMenuOpen(false)}>Home</Link>
+                <a href="#services" onClick={() => setMenuOpen(false)}>Services</a>
+                <a href="#about" onClick={() => setMenuOpen(false)}>About</a>
+
+                {token ? (
+                    <button
+                        className="navbar-cta"
+                        onClick={() => { setMenuOpen(false); navigate('/dashboard'); }}
+                    >
+                        Dashboard
+                    </button>
+                ) : (
+                    <button
+                        className="navbar-cta"
+                        onClick={() => { setMenuOpen(false); navigate('/login'); }}
+                    >
+                        Log In
+                    </button>
+                )}
+            </div>
+        </nav>
+    );
+}
+
+export default Navbar;
+</file>
+
 <file path="frontend/src/components/Dashboard/Dashboard.tsx">
 
 </file>
@@ -739,10 +792,6 @@ export default AuthLayout;
 </file>
 
 <file path="frontend/src/hooks/useAuth.ts">
-
-</file>
-
-<file path="frontend/src/hooks/useServices.ts">
 
 </file>
 
@@ -977,18 +1026,6 @@ export default Signup;
 
 </file>
 
-<file path="frontend/src/types/service.types.ts">
-export interface Service {
-  id: string;
-  name: string;
-  type: 'clinic' | 'library' | 'shelter' | string;
-  address: string;
-  latitude: number;
-  longitude: number;
-  operatingHours?: string;
-}
-</file>
-
 <file path="frontend/src/types/user.types.ts">
 export interface User {
   id: string;
@@ -1057,36 +1094,6 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
 });
-</file>
-
-<file path=".gitignore">
-# Dependencies
-node_modules/
-frontend/node_modules/
-backend/node_modules/
-
-# Env files
-.env
-.env.local
-frontend/.env
-backend/.env
-
-# Build output
-frontend/dist/
-backend/dist/
-backend/build/
-
-# Logs
-*.log
-npm-debug.log*
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Editor
-.vscode/
-.idea/
 </file>
 
 <file path="backend/src/api/lib/rate_limit.ts">
@@ -1482,6 +1489,61 @@ function LoginForm() {
 export default LoginForm;
 </file>
 
+<file path="frontend/src/hooks/useServices.ts">
+// import { useEffect, useState } from "react";
+// import { getServices } from "../services/api";
+// import type { Service } from "../types/service.types";
+
+// export function useServices() {
+// 	const [services, setServices] = useState<Service[]>([]);
+// 	const [loading, setLoading] = useState(true);
+// 	const [error, setError] = useState("");
+
+// 	useEffect(() => {
+// 		let active = true;
+// 		getServices()
+// 			.then((data) => {
+// 				if (active) setServices(data);
+// 			})
+// 			.catch((reason: unknown) => {
+// 				if (active) setError(reason instanceof Error ? reason.message : "Unable to load services");
+// 			})
+// 			.finally(() => {
+// 				if (active) setLoading(false);
+// 			});
+// 		return () => {
+// 			active = false;
+// 		};
+// 	}, []);
+
+// 	return { services, loading, error };
+// }
+
+
+import { useLiveQuery } from 'dexie-react-hooks';
+import { useEffect, useState } from 'react';
+import { db } from '../db';
+import { refreshServicesIfStale } from '../db/serviceCache';
+import type { Service } from '../types/service.types';
+
+export function useServices() {
+  const services = useLiveQuery(() => db.services.toArray(), [], [] as Service[]);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    refreshServicesIfStale().catch((err) => {
+      setError(err instanceof Error ? err.message : 'Unable to refresh services.');
+    });
+  }, []);
+
+  return {
+    services: services ?? [],
+    loading: services === undefined,
+    error,
+  };
+}
+</file>
+
 <file path="frontend/src/pages/Dashboard.tsx">
 function Dashboard() {
 	return (
@@ -1511,61 +1573,6 @@ function Login() {
 export default Login;
 </file>
 
-<file path="frontend/src/services/api.ts">
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
-
-type ApiError = { error?: string };
-
-async function request<T>(path: string, options: RequestInit): Promise<T> {
-	let response: Response;
-	try {
-		response = await fetch(`${API_BASE_URL}${path}`, {
-			...options,
-			headers: { 'Content-Type': 'application/json', ...options.headers },
-		});
-	} catch {
-		throw new Error('Unable to reach the authentication server. Start the backend and check its Supabase configuration.');
-	}
-	const payload = await response.json() as T & ApiError;
-	if (!response.ok) throw new Error(payload.error || 'Something went wrong.');
-	return payload;
-}
-
-export type AuthResponse = {
-	user: { id: string; email?: string };
-	session?: { access_token: string; refresh_token: string };
-	needsEmailConfirmation?: boolean;
-};
-
-export function loginRequest(email: string, password: string) {
-	return request<AuthResponse>('/auth/login', {
-		method: 'POST',
-		body: JSON.stringify({ email, password }),
-	});
-}
-
-export function signupRequest(firstName: string, lastName: string, phoneNumber: string, email: string, password: string) {
-	return request<AuthResponse>('/auth/signup', {
-		method: 'POST',
-		body: JSON.stringify({ firstName, lastName, phoneNumber, email, password }),
-	});
-}
-
-export function forgotPasswordRequest(email: string) {
-	return request<{ message: string }>('/auth/forgot-password', {
-		method: 'POST',
-		body: JSON.stringify({ email }),
-	});
-}
-
-export function resetPasswordRequest(accessToken: string, password: string) {
-	return request<{ message: string }>('/auth/reset-password', {
-		method: 'POST',
-		body: JSON.stringify({ accessToken, password }),
-	});
-}
-</file>
-
 <file path="frontend/src/styles/variables.css">
 :root {
 	font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
@@ -1573,6 +1580,36 @@ export function resetPasswordRequest(accessToken: string, password: string) {
 	background: #d9e8f1;
 	font-synthesis: none;
 	text-rendering: optimizeLegibility;
+}
+</file>
+
+<file path="frontend/src/types/service.types.ts">
+export interface Service {
+  id: string;
+  external_id: string | null;
+  name: string;
+  category_id: string | null;
+  type: string | null;
+  formatted_address: string | null;
+  location: string | { coordinates?: [number, number] } | null;
+  opening_hours: string | null;
+  phone: string | null;
+  website: string | null;
+  wheelchair: string | null;
+  sourcename: string;
+  status: string;
+  submitted_by: string | null;
+  reviewed_by: string | null;
+  review_note: string | null;
+  imported_at: string | null;
+  created_at: string;
+  updated_at: string;
+  category?: {
+    id: string;
+    name: string;
+    slug: string;
+    parent_id: string | null;
+  } | null;
 }
 </file>
 
@@ -1593,35 +1630,6 @@ export function resetPasswordRequest(accessToken: string, password: string) {
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </body>
 </html>
-</file>
-
-<file path="frontend/package.json">
-{
-  "name": "service-finder-frontend",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "axios": "^1.7.0",
-    "firebase": "^10.13.0",
-    "lucide-react": "^0.468.0",
-    "react": "^18.3.0",
-    "react-dom": "^18.3.0",
-    "react-router-dom": "^6.26.0"
-  },
-  "devDependencies": {
-    "@types/react": "^18.3.0",
-    "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.0",
-    "typescript": "^5.5.0",
-    "vite": "^5.4.0"
-  }
-}
 </file>
 
 <file path="frontend/tsconfig.tsbuildinfo">
@@ -1691,6 +1699,43 @@ export function resetPasswordRequest(accessToken: string, password: string) {
     ],
     "version": "5.9.3"
 }
+</file>
+
+<file path=".gitignore">
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Env files
+.env
+.env.local
+frontend/.env
+backend/.env
+
+# Build output
+frontend/dist/
+backend/dist/
+backend/build/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# others
+.fallow/
+.repomix/
+
+frontend/package-lock.json
+backend/package-lock.json
 </file>
 
 <file path="package.json">
@@ -2060,1669 +2105,107 @@ IMPORT_INTERVAL_MS=0
 }
 </file>
 
-<file path="frontend/src/styles/index.css">
-@import './variables.css';
-
-* {
-	box-sizing: border-box;
-}
-
-body {
-	margin: 0;
-	min-width: 320px;
-}
-
-button,
-input {
-	font: inherit;
-}
-
-a {
-	color: inherit;
-}
-
-.dashboard-placeholder {
-	min-height: 100vh;
-	display: grid;
-	place-items: center;
-	color: #102d4e;
-	background: #edf4f8;
-}
-
-.dashboard-placeholder h1 {
-	font-size: 32px;
-}
-
-.auth-page {
-	min-height: 100vh;
-	display: grid;
-	grid-template-columns: minmax(320px, .7fr) minmax(620px, 1fr);
-	background: linear-gradient(105deg, rgba(4, 28, 49, .7) 0%, rgba(10, 72, 102, .28) 52%, rgba(220, 237, 246, .28) 100%), url('../assets/service1.jpg') center / cover;
-}
-
-.auth-story {
-	position: relative;
-	display: flex;
-	align-items: center;
-	min-height: 100vh;
-	padding: 50px clamp(40px, 7vw, 108px);
-	color: #fff;
-	overflow: hidden;
-}
-
-.auth-story::after {
-	display: none;
-}
-
-.story-content {
-	position: relative;
-	z-index: 1;
-	max-width: 560px;
-}
-
-.brand {
-	display: inline-flex;
-	align-items: center;
-	gap: 13px;
-	text-decoration: none;
-	font-weight: 700;
-}
-
-.brand-mark {
-	display: grid;
-	width: 48px;
-	height: 48px;
-	place-items: center;
-	border-radius: 50% 50% 50% 8px;
-	color: #fff;
-	background: #005a8a;
-	transform: rotate(-45deg);
-	box-shadow: 0 6px 18px rgba(5, 128, 192, .35);
-}
-
-.brand-mark span {
-	font-size: 37px;
-	line-height: 1;
-	transform: rotate(45deg);
-}
-
-.brand-name {
-	font-size: clamp(24px, 2.5vw, 34px);
-	letter-spacing: -.7px;
-}
-
-.brand-name span,
-.story-copy strong {
-	color: #08aef0;
-}
-
-.story-copy {
-	margin-top: clamp(76px, 12vh, 132px);
-}
-
-.eyebrow {
-	margin: 0 0 22px;
-	font-size: 10px;
-	letter-spacing: 4px;
-	opacity: .9;
-}
-
-.eyebrow span {
-	margin: 0 5px;
-	color: #08aef0;
-}
-
-.story-copy h1 {
-	max-width: 460px;
-	margin: 0;
-	font-size: clamp(35px, 4.1vw, 58px);
-	line-height: 1.08;
-	letter-spacing: -1.5px;
-	font-weight: 700;
-}
-
-.story-copy h1 strong {
-	display: block;
-}
-
-.story-description {
-	max-width: 410px;
-	margin: 26px 0 0;
-	font-size: 16px;
-	line-height: 1.48;
-	color: rgba(255, 255, 255, .9);
-}
-
-.story-features {
-	display: flex;
-	gap: 0;
-	margin-top: 63px;
-}
-
-.story-feature {
-	min-width: 120px;
-	padding: 0 23px;
-	border-left: 1px solid rgba(255, 255, 255, .3);
-	display: flex;
-	flex-direction: column;
-}
-
-.story-feature:first-child {
-	padding-left: 0;
-	border-left: 0;
-}
-
-.feature-icon {
-	margin-bottom: 8px;
-	color: #08aef0;
-	font-size: 31px;
-	line-height: 1;
-}
-
-.story-feature strong {
-	font-size: 15px;
-}
-
-.story-feature small {
-	margin-top: 3px;
-	font-size: 11px;
-	color: rgba(255, 255, 255, .72);
-}
-
-.auth-panel {
-	display: grid;
-	place-items: center;
-	padding: 48px clamp(24px, 5vw, 120px);
-	background: transparent;
-}
-
-.login-card {
-	position: relative;
-	width: min(100%, 560px);
-	padding: 30px clamp(29px, 4vw, 58px) 36px;
-	border: 1px solid rgba(255, 255, 255, .8);
-	border-left: 5px solid #08aef0;
-	border-radius: 8px 30px 8px 30px;
-	background: rgba(245, 249, 252, .91);
-	box-shadow: 18px 24px 0 rgba(3, 41, 66, .14), 0 24px 60px rgba(13, 48, 71, .22);
-}
-
-.login-card::before {
-	content: '';
-	position: absolute;
-	top: 20px;
-	right: 25px;
-	width: 42px;
-	height: 42px;
-	border: 1px solid rgba(8, 174, 240, .35);
-	border-radius: 50%;
-	box-shadow: 0 0 0 7px rgba(8, 174, 240, .08), 0 0 0 14px rgba(8, 174, 240, .04);
-	pointer-events: none;
-}
-
-.panel-kicker {
-	margin: 0 0 10px;
-	color: #1b91d0;
-	font-size: 10px;
-	font-weight: 700;
-	letter-spacing: 2px;
-}
-
-.login-heading h2 {
-	margin: 0;
-	color: #102d4e;
-	font-size: clamp(28px, 3vw, 38px);
-	letter-spacing: -1px;
-}
-
-.login-heading p {
-	margin: 6px 0 24px;
-	color: #6a819a;
-	font-size: 13px;
-	line-height: 1.45;
-}
-
-.form-error {
-	margin: 0 0 13px;
-	padding: 9px 11px;
-	border: 1px solid #f1b7b7;
-	border-radius: 6px;
-	color: #9a3030;
-	background: #fff2f2;
-	font-size: 11px;
-	line-height: 1.4;
-}
-
-.form-success {
-	margin: 0 0 13px;
-	padding: 9px 11px;
-	border: 1px solid #add9bd;
-	border-radius: 6px;
-	color: #216b43;
-	background: #effaf3;
-	font-size: 11px;
-	line-height: 1.4;
-}
-
-.field-label {
-	position: absolute;
-	width: 5px;
-	height: 1px;
-	overflow: hidden;
-	clip: rect(0 0 0 0);
-}
-
-.auth-form-card form {
-	display: flex;
-	flex-direction: column;
-	gap: 13px;
-}
-
-.auth-input-row {
-	display: grid;
-	grid-template-columns: 1fr 1fr;
-	gap: 13px;
-}
-
-.auth-input {
-	width: 100%;
-	height: 45px;
-	padding: 0 13px;
-	border: 1px solid #dbe5ee;
-	border-radius: 6px;
-	outline: 0;
-	color: #173653;
-	background: rgba(255, 255, 255, .76);
-}
-
-.auth-input:focus {
-	border-color: #159feb;
-	box-shadow: 0 0 0 3px rgba(21, 159, 235, .14);
-}
-
-.auth-input::placeholder {
-	color: #91a6ba;
-	font-size: 11px;
-}
-
-.input-wrap {
-	position: relative;
-	margin-bottom: 13px;
-}
-
-.input-wrap input {
-	width: 100%;
-	height: 45px;
-	padding: 0 40px;
-	border: 1px solid #dbe5ee;
-	border-radius: 6px;
-	outline: 0;
-	color: #173653;
-	background: rgba(255, 255, 255, .76);
-	transition: border-color .2s, box-shadow .2s;
-}
-
-.input-wrap input:focus {
-	border-color: #159feb;
-	box-shadow: 0 0 0 3px rgba(21, 159, 235, .14);
-}
-
-.input-wrap input::placeholder {
-	color: #91a6ba;
-	font-size: 11px;
-}
-
-.input-icon {
-	position: absolute;
-	top: 13px;
-	left: 12px;
-	z-index: 1;
-	color: #173653;
-	font-size: 17px;
-}
-
-.visibility-button {
-	position: absolute;
-	top: 0;
-	right: 0;
-	width: 42px;
-	height: 45px;
-	border: 0;
-	color: #173653;
-	background: transparent;
-	cursor: pointer;
-}
-
-.form-options {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	margin: 1px 0 16px;
-	color: #57718d;
-	font-size: 10px;
-}
-
-.form-options a,
-.signup-prompt a {
-	color: #007fd1;
-	text-decoration: none;
-}
-
-.remember-option {
-	display: flex;
-	align-items: center;
-	gap: 7px;
-	cursor: pointer;
-}
-
-.remember-option input {
-	accent-color: #087fd9;
-}
-
-.submit-button,
-.google-button {
-	width: 100%;
-	height: 44px;
-	border-radius: 7px;
-	cursor: pointer;
-	font-size: 12px;
-}
-
-.submit-button {
-	border: 0;
-	color: #fff;
-	background: linear-gradient(100deg, #0967c5, #0798f5);
-	box-shadow: 0 8px 14px rgba(0, 123, 215, .18);
-	transition: transform .2s, box-shadow .2s;
-}
-
-.submit-button:hover:not(:disabled) {
-	transform: translateY(-2px);
-	box-shadow: 0 12px 20px rgba(0, 123, 215, .27);
-}
-
-.submit-button:disabled {
-	cursor: wait;
-	opacity: .72;
-}
-
-.submit-button span {
-	margin-left: 12px;
-	font-size: 20px;
-	vertical-align: -1px;
-}
-
-.divider {
-	display: flex;
-	align-items: center;
-	gap: 13px;
-	margin: 18px 0;
-	color: #65809a;
-	font-size: 9px;
-}
-
-.divider::before,
-.divider::after {
-	content: '';
-	height: 1px;
-	flex: 1;
-	background: #c8d9e6;
-}
-
-.google-button {
-	border: 1px solid #9bb8cf;
-	color: #173653;
-	background: rgba(255, 255, 255, .18);
-}
-
-.google-g {
-	display: inline-block;
-	margin-right: 10px;
-	color: #4285f4;
-	font-size: 17px;
-	font-weight: 700;
-}
-
-.signup-prompt {
-	margin: 23px 0 0;
-	color: #536d86;
-	text-align: center;
-	font-size: 10px;
-}
-
-.signup-prompt a {
-	font-weight: 700;
-}
-
-@media (max-width: 820px) {
-	.auth-page {
-		grid-template-columns: 1fr;
-	}
-
-	.auth-story {
-		min-height: 145px;
-		height: 145px;
-		padding: 25px 28px 45px;
-		align-items: flex-start;
-	}
-
-	.story-copy {
-		display: none;
-	}
-
-	.story-features {
-		display: none;
-	}
-
-	.auth-panel {
-		min-height: calc(100vh - 145px);
-		padding: 14px 20px 24px;
-		align-items: start;
-	}
-
-	.login-card {
-		margin-top: -42px;
-	}
-}
-
-@media (max-width: 430px) {
-	.auth-story {
-		min-height: 125px;
-		height: 125px;
-		padding: 22px 22px 40px;
-	}
-
-	.brand-mark {
-		width: 40px;
-		height: 40px;
-	}
-
-	.brand-mark span {
-		font-size: 30px;
-	}
-
-	.brand-name {
-		font-size: 26px;
-	}
-
-	.auth-panel {
-		min-height: calc(100vh - 125px);
-		padding: 12px 14px 18px;
-	}
-
-	.login-card {
-		padding: 29px 20px 25px;
-	}
-
-	.auth-input-row {
-		grid-template-columns: 1fr;
-		gap: 13px;
-	}
-}
-
-* {
-	box-sizing: border-box
-}
-
-body {
-	margin: 0;
-	font-family: 'DM Sans', sans-serif;
-	color: #523c28;
-	background: #e9d5a4
-}
-
-button,
-input {
-	font: inherit
-}
-
-.guide-shell {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  position: relative;
-  background: #f7e9b7;
-  isolation: isolate;
-}
-
-.map {
-	position: absolute;
-	inset: 0;
-	overflow: hidden;
-	background: radial-gradient(circle at 70% 35%, rgba(255, 255, 255, .7), transparent 31%), linear-gradient(115deg, #f8e5ad 0 30%, #f9e8b6 30% 48%, #fff3ca 48% 100%);
-	transform: scale(var(--scale));
-	transform-origin: center;
-	transition: transform .25s
-}
-
-.map:before {
-	content: '';
-	position: absolute;
-	inset: 0;
-	opacity: .28;
-	background-image: linear-gradient(#b48a5c 1px, transparent 1px), linear-gradient(90deg, #b48a5c 1px, transparent 1px);
-	background-size: 112px 112px
-}
-
-.map:after {
-	content: '';
-	position: absolute;
-	inset: 7px;
-	border: 2px solid rgba(126, 82, 37, .48);
-	box-shadow: inset 0 0 0 4px rgba(255, 240, 194, .8), inset 0 0 0 5px rgba(126, 82, 37, .27);
-	pointer-events: none
-}
-
-.map-lines {
-	position: absolute;
-	width: 83%;
-	height: 76%;
-	left: 18%;
-	top: 9%;
-	opacity: .5;
-	background: repeating-linear-gradient(18deg, transparent 0 84px, #c7894d 85px 87px, transparent 88px 144px), repeating-linear-gradient(104deg, transparent 0 115px, #e2a877 116px 118px, transparent 119px 210px)
-}
-
-.map-stage {
-  position: relative;
-  flex: 1;
-  min-height: 0; 
-  overflow: hidden;
-}
-
-.coast {
-	position: absolute;
-	border: 3px solid rgba(165, 124, 70, .45);
-	border-right: 0;
-	border-bottom: 0;
-	transform: rotate(-27deg);
-	border-radius: 65% 0 0 0
-}
-
-.coast-one {
-	width: 430px;
-	height: 510px;
-	left: 29%;
-	top: 36%
-}
-
-.coast-two {
-	width: 210px;
-	height: 250px;
-	left: 24%;
-	top: 57%;
-	transform: rotate(-49deg)
-}
-
-.ocean-label {
-	position: absolute;
-	left: 26%;
-	top: 64%;
-	color: #07516d;
-	font: 600 italic 24px 'Playfair Display';
-	letter-spacing: 3px
-}
-
-.table-label,
-.town {
-	position: absolute;
-	font: 700 17px 'Cormorant SC';
-	letter-spacing: 2px;
-	color: #5d3e28
-}
-
-.table-label {
-	left: 40%;
-	top: 50%;
-	font-size: 20px
-}
-
-.cape {
-	left: 39%;
-	top: 41%
-}
-
-.bellville {
-	left: 61%;
-	top: 36%
-}
-
-.mitchell {
-	left: 60%;
-	top: 68%
-}
-
-.mountains {
-	position: absolute;
-	left: 35%;
-	top: 49%;
-	color: #b58f5c;
-	font-size: 50px;
-	letter-spacing: -20px;
-	transform: rotate(-4deg)
-}
-
-.masthead {
-	position: absolute;
-	z-index: 3;
-	top: 70px;
-	left: 50%;
-	transform: translateX(-50%);
-	width: 318px;
-	text-align: center;
-	padding: 8px 14px 10px;
-	background: linear-gradient(90deg, #edc57e, #f5d28d, #e8bb70);
-	border: 1px solid #875e32;
-	outline: 3px double #f9e1a9;
-	box-shadow: 0 4px 8px #6d4a2754;
-	text-transform: uppercase
-}
-
-.masthead h1 {
-	margin: 0;
-	font: 600 21px 'Cormorant SC';
-	letter-spacing: 4px
-}
-
-.masthead p {
-	margin: 1px 0 0;
-	font: 600 12px 'Cormorant SC';
-	letter-spacing: 3px
-}
-
-.search-panel {
-	position: absolute;
-	z-index: 4;
-	top: 79px;
-	left: 50%;
-	transform: translateX(-50%);
-	width: min(672px, 53vw);
-	height: 62px;
-	display: flex;
-	align-items: center;
-	padding: 8px;
-	gap: 12px;
-	background: linear-gradient(90deg, #f8d188, #ebbd71);
-	border: 1px solid #c59357;
-	box-shadow: 0 3px 7px #72502a66
-}
-
-.glass {
-	font-size: 29px;
-	color: #9a7044;
-	transform: rotate(-20deg)
-}
-
-.search-panel input {
-	flex: 1;
-	min-width: 0;
-	border: 0;
-	outline: 0;
-	background: transparent;
-	color: #63482e;
-	font-size: 14px
-}
-
-.search-panel input::placeholder {
-	color: #9b7952
-}
-
-.search-button {
-	text-transform: uppercase;
-	letter-spacing: 1px;
-	font: 700 11px Georgia;
-	padding: 11px 16px;
-	border: 1px solid #65431f;
-	color: #fce5ae;
-	background: #65421f;
-	cursor: pointer
-}
-
-.locate {
-	width: 32px;
-	height: 39px;
-	border: 1px solid #9e784e;
-	color: #5b442c;
-	background: #f8e5b8;
-	font-size: 21px;
-	cursor: pointer
-}
-
-.zoom-controls {
-	position: absolute;
-	z-index: 4;
-	left: 9px;
-	top: 9px;
-	display: grid
-}
-
-.zoom-controls button {
-	width: 32px;
-	height: 32px;
-	border: 1px solid #9a8160;
-	background: #f6e5bf;
-	color: #5d452e;
-	font-size: 20px;
-	cursor: pointer
-}
-
-.zoom-controls button+button {
-	border-top: 0
-}
-
-.about,
-.legend {
-	position: absolute;
-	z-index: 4;
-	border: 1px solid #b48750;
-	outline: 2px double #f6d994;
-	background: linear-gradient(145deg, rgba(245, 209, 144, .92), rgba(235, 184, 103, .9));
-	box-shadow: 1px 2px 7px #86602a4a
-}
-
-.about {
-	bottom: 12px;
-	left: 13px;
-	width: 289px;
-	padding: 17px 17px 15px
-}
-
-.about h2,
-.legend h2 {
-	margin: 0 0 20px;
-	text-align: center;
-	text-transform: uppercase;
-	font: 600 16px 'Cormorant SC';
-	letter-spacing: 4px
-}
-
-.about p {
-	margin: 0;
-	font: 14px/1.65 'Playfair Display'
-}
-
-.motto {
-	border-top: 1px solid #bd9460;
-	margin-top: 11px;
-	padding-top: 10px;
-	text-align: center;
-	color: #8a653d;
-	font: italic 14px/1.4 'Playfair Display'
-}
-
-.legend {
-	right: 14px;
-	bottom: 12px;
-	width: 291px;
-	padding: 19px 25px
-}
-
-.legend h2 {
-	margin-bottom: 18px
-}
-
-.legend button {
-	width: 100%;
-	display: flex;
-	align-items: center;
-	border: 0;
-	padding: 5px 0;
-	text-align: left;
-	background: transparent;
-	color: #503921;
-	font-size: 14px;
-	cursor: pointer;
-	border-radius: 4px
-}
-
-.legend button:hover,
-.legend button.active {
-	background: rgba(116, 75, 35, .12)
-}
-
-.legend i {
-	width: 16px;
-	height: 20px;
-	margin-right: 10px;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	border: 2px solid #e9d4a2;
-	border-radius: 50% 50% 50% 0;
-	transform: rotate(-45deg);
-	color: #fff6d2;
-	box-shadow: 0 0 0 1px #6d4e2b;
-	font: 11px Georgia
-}
-
-.you-are {
-	margin-top: 7px;
-	padding-top: 10px !important;
-	border-top: 1px solid #c99a61 !important
-}
-
-.you-are i {
-	background: transparent !important;
-	border: 0 !important;
-	box-shadow: none !important;
-	color: #dab05f !important;
-	transform: none !important;
-	font-size: 17px !important
-}
-
-.markers {
-	position: absolute;
-	inset: 0
-}
-
-.pin {
-	position: absolute;
-	z-index: 2;
-	width: 30px;
-	height: 30px;
-	padding: 0;
-	border: 3px solid #6b4a2c;
-	border-radius: 50% 50% 50% 0;
-	background: #eee0af;
-	transform: translate(-50%, -50%) rotate(-45deg);
-	box-shadow: 0 2px 0 #6a482a, 0 0 0 3px #d7b777;
-	cursor: pointer;
-	transition: transform .15s
-}
-
-.pin:hover,
-.pin.selected {
-	z-index: 3;
-	transform: translate(-50%, -50%) rotate(-45deg) scale(1.18)
-}
-
-.pin i {
-	position: absolute;
-	inset: 3px;
-	display: grid;
-	place-items: center;
-	border-radius: 50%;
-	transform: rotate(45deg);
-	font: 700 13px Georgia;
-	color: #fff6d8;
-	background: var(--pin);
-	font-style: normal
-}
-
-.place-card {
-	position: absolute;
-	z-index: 5;
-	width: 190px;
-	padding: 11px 26px 11px 12px;
-	background: #f7d990;
-	border: 1px solid #8d6337;
-	box-shadow: 0 2px 6px #5f402c66;
-	font-size: 12px
-}
-
-.place-card strong {
-	display: block;
-	font-family: 'Playfair Display'
-}
-
-.place-card span {
-	color: #88613c
-}
-
-.place-card button {
-	position: absolute;
-	right: 5px;
-	top: 2px;
-	border: 0;
-	background: transparent;
-	color: #5e3e24;
-	cursor: pointer;
-	font-size: 18px
-}
-
-.map-tools {
-	position: absolute;
-	z-index: 5;
-	bottom: 10px;
-	left: 50%;
-	transform: translateX(-50%);
-	padding: 5px 9px;
-	border-radius: 20px;
-	background: #fff5cb;
-	box-shadow: 0 1px 4px #80613555
-}
-
-.map-tools button {
-	border: 0;
-	background: transparent;
-	color: #574532;
-	padding: 2px 9px;
-	cursor: pointer
-}
-
-.notice {
-	position: absolute;
-	z-index: 7;
-	top: 149px;
-	left: 50%;
-	transform: translateX(-50%);
-	padding: 8px 16px;
-	background: #6b4928;
-	color: #ffedb9;
-	box-shadow: 0 2px 5px #5b3d2c66;
-	font-size: 13px
-}
-
-@media(max-width:780px) {
-	.search-panel {
-		width: calc(100% - 84px);
-		top: 74px
-	}
-
-	.legend {
-		display: none
-	}
-
-	.about {
-		width: min(289px, calc(100% - 24px))
-	}
-
-	.masthead {
-		width: 270px
-	}
-
-	.pin {
-		width: 25px;
-		height: 25px
-	}
-
-	.map {
-		transform: scale(1)
-	}
-
-	.table-label,
-	.town {
-		font-size: 12px
-	}
-}
-
-/* Leaflet live map */
-.leaflet-map {
-	position: absolute;
-	inset: 0;
-	z-index: 0;
-	background: #f4e4af
-}
-
-.leaflet-map .leaflet-tile {
-	filter: sepia(.55) saturate(.65) brightness(1.12) contrast(.86)
-}
-
-.leaflet-map .leaflet-control-attribution {
-	background: rgba(249, 232, 185, .78) !important;
-	color: #755536;
-	font-size: 10px
-}
-
-.masthead,
-.search-panel,
-.about,
-.legend,
-.notice,
-.leaflet-zoom {
-	z-index: 1000
-}
-
-.leaflet-zoom {
-	position: absolute;
-	left: 9px;
-	top: 9px;
-	display: grid
-}
-
-.leaflet-zoom button {
-	width: 32px;
-	height: 32px;
-	border: 1px solid #9a8160;
-	background: #f6e5bf;
-	color: #5d452e;
-	font-size: 20px;
-	cursor: pointer
-}
-
-.leaflet-zoom button+button {
-	border-top: 0
-}
-
-.cape-marker-wrap {
-	background: none !important;
-	border: 0 !important
-}
-
-.cape-marker {
-	width: 30px;
-	height: 30px;
-	border: 3px solid #6b4a2c;
-	border-radius: 50% 50% 50% 0;
-	background: #eee0af;
-	transform: rotate(-45deg);
-	box-shadow: 0 2px 0 #6a482a, 0 0 0 3px #d7b777
-}
-
-.cape-marker span {
-	position: absolute;
-	inset: 3px;
-	display: grid;
-	place-items: center;
-	border-radius: 50%;
-	transform: rotate(45deg);
-	font: 700 13px Georgia;
-	color: #fff6d8;
-	background: var(--marker)
-}
-
-.leaflet-tooltip {
-	border: 1px solid #8d6337 !important;
-	border-radius: 0 !important;
-	background: #f7d990 !important;
-	color: #553b24 !important;
-	box-shadow: 0 2px 6px #5f402c66 !important;
-	font: 12px 'DM Sans', sans-serif !important
-}
-
-.leaflet-tooltip:before {
-	border-top-color: #8d6337 !important
-}
-
-.leaflet-tooltip strong {
-	font-family: 'Playfair Display'
-}
-
-.glass {
-	display: flex;
-	align-items: center
-}
-
-.legend i svg {
-	transform: rotate(45deg)
-}
-
-.you-are i svg {
-	transform: none
-}
-
-.leaflet-zoom button {
-	display: grid;
-	place-items: center
-}
-
-.navbar {
-  position: relative;
-  z-index: 2000;
-  flex-shrink: 0;
-  height: 64px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 28px;
-  background: linear-gradient(90deg, rgba(244, 209, 140, .96), rgba(235, 184, 103, .96));
-  border-bottom: 1px solid #8c6337;
-  box-shadow: 0 2px 8px rgba(114, 80, 42, .25);
-  font-family: 'DM Sans', sans-serif;
-}
-
-.navbar-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  text-decoration: none;
-  color: #52391f;
-  font: 600 20px 'Cormorant SC', serif;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-}
-
-.navbar-brand strong {
-  color: #005a8a;
-}
-
-.navbar-links {
-  display: flex;
-  align-items: center;
-  gap: 26px;
-}
-
-.navbar-links a {
-  text-decoration: none;
-  color: #5d4327;
-  font-size: 14px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  transition: color .2s;
-}
-
-.navbar-links a:hover {
-  color: #005a8a;
-}
-
-.navbar-cta {
-  padding: 9px 20px;
-  border: 1px solid #65431f;
-  background: #65421f;
-  color: #fce5ae;
-  font: 700 11px Georgia, serif;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: background .2s, transform .2s;
-}
-
-.navbar-cta:hover {
-  background: #005a8a;
-  border-color: #005a8a;
-  transform: translateY(-1px);
-}
-
-.navbar-toggle {
-  display: none;
-  border: 0;
-  background: transparent;
-  color: #52391f;
-  cursor: pointer;
-}
-
-@media (max-width: 780px) {
-  .navbar { padding: 12px 18px; }
-  .navbar-toggle { display: block; }
-  .navbar-links {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0;
-    padding: 0;
-    background: rgba(244, 209, 140, .98);
-    border-bottom: 1px solid #8c6337;
-    max-height: 0;
-    overflow: hidden;
-    transition: max-height .25s ease;
+<file path="frontend/src/services/api.ts">
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+
+type ApiError = { error?: string };
+
+async function request<T>(path: string, options: RequestInit): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...options.headers },
+    });
+  } catch {
+    throw new Error('Unable to reach the authentication server. Start the backend and check its Supabase configuration.');
   }
-  .navbar-links.open { max-height: 320px; }
-  .navbar-links a,
-  .navbar-cta {
-    padding: 14px 22px;
-    border-radius: 0;
-    border: 0;
-    border-top: 1px solid rgba(140, 99, 55, .3);
-    text-align: left;
-    width: 100%;
-  }
-}
-.panel-trigger {
-	position: absolute;
-	z-index: 1100;
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	padding: 10px 14px;
-	border: 1px solid #8c6337;
-	outline: 2px double #f6d994;
-	background: linear-gradient(145deg, #f4d18c, #e6b466);
-	color: #52391f;
-	box-shadow: 1px 2px 7px #86602a70;
-	text-transform: uppercase;
-	font: 600 12px 'Cormorant SC';
-	letter-spacing: 1.8px;
-	cursor: pointer
+  const payload = await response.json() as T & ApiError;
+  if (!response.ok) throw new Error(payload.error || 'Something went wrong.');
+  return payload;
 }
 
-.panel-trigger:hover {
-	background: #f8d991
+export type AuthResponse = {
+  user: { id: string; email?: string };
+  session?: { access_token: string; refresh_token: string };
+  needsEmailConfirmation?: boolean;
+};
+
+export function loginRequest(email: string, password: string) {
+  return request<AuthResponse>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
 }
 
-.about-trigger {
-	left: 14px;
-	bottom: 14px
+export function signupRequest(firstName: string, lastName: string, phoneNumber: string, email: string, password: string) {
+  return request<AuthResponse>('/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify({ firstName, lastName, phoneNumber, email, password }),
+  });
 }
 
-.legend-trigger {
-	right: 14px;
-	bottom: 14px
+export function forgotPasswordRequest(email: string) {
+  return request<{ message: string }>('/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
 }
 
-.popup-panel {
-	z-index: 1200 !important;
-	animation: panel-pop .2s ease-out
+export function resetPasswordRequest(accessToken: string, password: string) {
+  return request<{ message: string }>('/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ accessToken, password }),
+  });
 }
 
-.close-panel,
-.legend .close-panel {
-	position: absolute;
-	right: 8px;
-	top: 8px;
-	width: 29px;
-	height: 29px;
-	display: grid;
-	place-items: center;
-	margin: 0;
-	padding: 0;
-	border: 0 !important;
-	background: transparent !important;
-	color: #624422;
-	cursor: pointer
+// ---------- Services ----------
+
+import type { Service } from '../types/service.types';
+
+export function getServices(params?: { type?: string; q?: string; limit?: number }) {
+  const search = new URLSearchParams();
+  if (params?.type) search.set('type', params.type);
+  if (params?.q) search.set('q', params.q);
+  if (params?.limit) search.set('limit', String(params.limit));
+  const qs = search.toString();
+  return request<Service[]>(`/services${qs ? `?${qs}` : ''}`, { method: 'GET' });
 }
 
-.close-panel:hover,
-.legend .close-panel:hover {
-	background: rgba(103, 67, 31, .12) !important
-}
-
-@keyframes panel-pop {
-	from {
-		opacity: 0;
-		transform: translateY(10px) scale(.97)
-	}
-
-	to {
-		opacity: 1;
-		transform: translateY(0) scale(1)
-	}
-}
-
-.service-popup {
-	position: absolute;
-	z-index: 1150;
-	left: 12px;
-	bottom: 12px;
-	width: min(455px, calc(100% - 24px));
-	padding: 17px 18px 18px;
-	background: linear-gradient(135deg, #f4d48f, #e8b866);
-	border: 1px solid #8f6335;
-	outline: 3px double #f8dfa8;
-	box-shadow: 2px 3px 9px #5f43277a;
-	animation: panel-pop .2s ease-out
-}
-
-.service-close {
-	position: absolute;
-	right: 12px;
-	top: 11px;
-	border: 0;
-	background: transparent;
-	color: #664526;
-	cursor: pointer
-}
-
-.service-title {
-	display: flex;
-	align-items: center;
-	gap: 11px;
-	padding: 0 25px 12px 0;
-	border-bottom: 1px solid #c39358
-}
-
-.service-icon {
-	width: 28px;
-	height: 35px;
-	display: grid;
-	place-items: center;
-	border: 3px solid #694927;
-	border-radius: 50% 50% 50% 0;
-	transform: rotate(-45deg);
-	box-shadow: 0 1px 0 #6b482a, 0 0 0 2px #dfc181;
-	color: #fff6d8
-}
-
-.service-icon svg {
-	transform: rotate(45deg)
-}
-
-.service-title h2 {
-	margin: 0;
-	text-transform: uppercase;
-	font: 600 18px 'Cormorant SC';
-	letter-spacing: 2px
-}
-
-.service-title p {
-	margin: 2px 0 0;
-	text-transform: uppercase;
-	color: #85603a;
-	font: 600 11px 'Cormorant SC';
-	letter-spacing: 2px
-}
-
-.service-info {
-	padding: 11px 0 8px
-}
-
-.service-info p {
-	display: flex;
-	align-items: center;
-	gap: 9px;
-	margin: 5px 0;
-	color: #594027;
-	font: 14px/1.35 'DM Sans'
-}
-
-.service-info svg {
-	color: #987047;
-	flex: none
-}
-
-.service-actions {
-	display: flex;
-	gap: 8px;
-	border-top: 1px solid #c39358;
-	padding-top: 11px
-}
-
-.service-actions button {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: 6px;
-	min-height: 33px;
-	padding: 0 13px;
-	border: 1px solid #b78955;
-	background: #f7e7bd;
-	color: #674a2e;
-	text-transform: uppercase;
-	font: 600 11px 'Cormorant SC';
-	letter-spacing: 1.5px;
-	cursor: pointer
-}
-
-.service-actions .directions {
-	background: #714621;
-	color: #ffe6af;
-	border-color: #70441f
-}
-
-.service-actions .saved {
-	background: #dfb162;
-	color: #5b3b1d
-}
-
-@media(max-width:520px) {
-	.service-popup {
-		bottom: 9px;
-		padding: 14px
-	}
-
-	.service-title h2 {
-		font-size: 15px
-	}
-
-	.service-actions {
-		gap: 4px
-	}
-
-	.service-actions button {
-		padding: 0 8px;
-		font-size: 10px
-	}
-}
-
-.service-popup {
-	left: 50% !important;
-	top: auto !important;
-	bottom: 12px !important;
-	transform: translateX(-50%);
-	z-index: 1150 !important
-}
-
-.service-popup .service-close {
-	z-index: 1
-}
-
-@media(max-width:780px) {
-	.service-popup {
-		bottom: 58px !important
-	}
-}
-
-@media(max-width:520px) {
-	.service-popup {
-		bottom: 9px !important
-	}
+export function getServiceDetails(externalId: string) {
+  return request<Service>(`/services/${encodeURIComponent(externalId)}`, { method: 'GET' });
 }
 </file>
 
-<file path="frontend/src/App.tsx">
-import Login from './pages/Login';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
-import Signup from './pages/Signup';
-import ForgotPassword from './pages/ForgotPassword';
-import ResetPassword from './pages/ResetPassword';
-import Dashboard from './pages/Dashboard';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import {
-  BookOpen, Bookmark, Bus, Clock3, Flame, GraduationCap, Heart, Hospital,
-  House, Landmark, Library, LocateFixed, MapPinned, Minus, Navigation,
-  Phone, Pill, Plus, Search, Shield, ShoppingBag, Smile, Stethoscope, X,
-} from 'lucide-react';
-import Navbar from './components/common/Navbar';
-
-declare const L: any;
-
-type Category =
-  | 'Clinics' | 'Libraries' | 'Shelters' | 'Hospitals' | 'Police Stations'
-  | 'Pharmacies' | 'Dentists' | 'SPCA' | 'Fire Stations' | 'Home Affairs'
-  | 'Malls' | 'Transport' | 'Schools / Universities';
-
-type Place = { name: string; category: Category; area: string; lat: number; lng: number };
-
-const categories: { name: Category; symbol: string; color: string }[] = [
-  { name: 'Clinics',                symbol: '+',  color: '#b94b3c' },
-  { name: 'Libraries',              symbol: '▮',  color: '#4f876f' },
-  { name: 'Shelters',               symbol: '⌂',  color: '#cb8c38' },
-  { name: 'Hospitals',              symbol: '+',  color: '#3b77a2' },
-  { name: 'Police Stations',        symbol: '●',  color: '#375f93' },
-  { name: 'Pharmacies',             symbol: '●',  color: '#81528d' },
-  { name: 'Dentists',               symbol: '●',  color: '#77909c' },
-  { name: 'SPCA',                   symbol: '♥',  color: '#815c54' },
-  { name: 'Fire Stations',          symbol: '♦',  color: '#bd6240' },
-  { name: 'Home Affairs',           symbol: '▦',  color: '#75664b' },
-  { name: 'Malls',                  symbol: '●',  color: '#a45b83' },
-  { name: 'Transport',              symbol: '▰',  color: '#847337' },
-  { name: 'Schools / Universities', symbol: '◆',  color: '#43858a' },
-];
-
-const places: Place[] = ([
-  ['Cape Town Civic Centre',     'Home Affairs',           'Cape Town',       -33.925, 18.424],
-  ['Groote Schuur Hospital',     'Hospitals',              'Observatory',     -33.941, 18.465],
-  ['Sea Point Police Station',   'Police Stations',        'Sea Point',       -33.918, 18.386],
-  ['Cape Town Central Library',  'Libraries',              'CBD',             -33.925, 18.423],
-  ['Woodstock Clinic',           'Clinics',                'Woodstock',       -33.927, 18.448],
-  ['Mowbray Maternity Hospital', 'Hospitals',              'Mowbray',         -33.948, 18.475],
-  ['Rondebosch Library',         'Libraries',              'Rondebosch',      -33.961, 18.476],
-  ['Khayelitsha Mall',           'Malls',                  'Khayelitsha',     -34.037, 18.678],
-  ['Mitchells Plain Clinic',     'Clinics',                'Mitchells Plain', -34.048, 18.617],
-  ['Bellville Police Station',   'Police Stations',        'Bellville',       -33.900, 18.628],
-  ['Tygerberg Hospital',         'Hospitals',              'Parow',           -33.908, 18.596],
-  ['Milnerton Library',          'Libraries',              'Milnerton',       -33.879, 18.496],
-  ['Hout Bay Fire Station',      'Fire Stations',          'Hout Bay',        -34.044, 18.348],
-  ['Wynberg SPCA',               'SPCA',                   'Wynberg',         -34.003, 18.468],
-  ['Claremont Transport Hub',    'Transport',              'Claremont',       -33.981, 18.465],
-  ['UCT',                        'Schools / Universities', 'Rondebosch',      -33.957, 18.461],
-  ['Table View Shelter',         'Shelters',               'Table View',      -33.824, 18.488],
-  ['Kloof Street Pharmacy',      'Pharmacies',             'Gardens',         -33.932, 18.410],
-] as [string, Category, string, number, number][]).map(([name, category, area, lat, lng]) => ({
-  name, category, area, lat, lng,
-}));
-
-const categoryIcon = (category: Category, size = 14) => {
-  const props = { size, strokeWidth: 2.2 };
-  switch (category) {
-    case 'Clinics':                return <Stethoscope {...props} />;
-    case 'Libraries':              return <Library {...props} />;
-    case 'Shelters':               return <House {...props} />;
-    case 'Hospitals':              return <Hospital {...props} />;
-    case 'Police Stations':        return <Shield {...props} />;
-    case 'Pharmacies':             return <Pill {...props} />;
-    case 'Dentists':               return <Smile {...props} />;
-    case 'SPCA':                   return <Heart {...props} />;
-    case 'Fire Stations':          return <Flame {...props} />;
-    case 'Home Affairs':           return <Landmark {...props} />;
-    case 'Malls':                  return <ShoppingBag {...props} />;
-    case 'Transport':              return <Bus {...props} />;
-    case 'Schools / Universities': return <GraduationCap {...props} />;
-    default:                       return null;
+<file path="frontend/package.json">
+{
+  "name": "service-finder-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.7.0",
+    "dexie": "^4.4.6",
+    "dexie-react-hooks": "^4.4.0",
+    "dotenv": "^17.4.2",
+    "firebase": "^10.13.0",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "react-router-dom": "^6.26.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0"
   }
-};
-
-function LeafletMap({ places, onSelect, mapRef }: {
-  places: Place[];
-  onSelect: (place: Place) => void;
-  mapRef: React.MutableRefObject<any>;
-}) {
-  const root = useRef<HTMLDivElement>(null);
-  const layer = useRef<any>(null);
-
-  useEffect(() => {
-    if (!root.current || !L) return;
-    const map = L.map(root.current, { zoomControl: false }).setView([-33.96, 18.50], 11);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-    mapRef.current = map;
-    layer.current = L.layerGroup().addTo(map);
-    return () => map.remove();
-  }, [mapRef]);
-
-  useEffect(() => {
-    if (!layer.current) return;
-    layer.current.clearLayers();
-    places.forEach(place => {
-      const item = categories.find(c => c.name === place.category)!;
-      const icon = L.divIcon({
-        className: 'cape-marker-wrap',
-        html: `<div class="cape-marker" style="--marker:${item.color}"><span>${renderToStaticMarkup(categoryIcon(place.category))}</span></div>`,
-        iconSize: [34, 42],
-        iconAnchor: [17, 42],
-      });
-      L.marker([place.lat, place.lng], { icon })
-        .addTo(layer.current)
-        .bindTooltip(`<strong>${place.name}</strong><br>${place.category}`, { direction: 'top' })
-        .on('click', () => onSelect(place));
-    });
-  }, [places, onSelect]);
-
-  return <div className="leaflet-map" ref={root} />;
-}
-
-function CapeGuide() {
-  const [query, setQuery] = useState('');
-  const [active, setActive] = useState<Category | null>(null);
-  const [selected, setSelected] = useState<Place | null>(null);
-  const [legendOpen, setLegendOpen] = useState(false);
-  const mapRef = useRef<any>(null);
-
-  const visible = useMemo(
-    () => places.filter(p =>
-      (!active || p.category === active) &&
-      `${p.name} ${p.area} ${p.category}`.toLowerCase().includes(query.toLowerCase())),
-    [active, query],
-  );
-
-  const selectPlace = useCallback((place: Place) => {
-    setSelected(place);
-    mapRef.current?.flyTo([place.lat, place.lng], 15);
-  }, []);
-
-return (
-  <main className="guide-shell">
-    <Navbar />
-
-    <div className="map-stage">
-      <LeafletMap places={visible} onSelect={selectPlace} mapRef={mapRef} />
-
-      <header className="masthead">
-        <h1>The Cape Guide</h1>
-        <p>Find. Navigate. Connect.</p>
-      </header>
-
-      <section className="search-panel">
-        <span className="glass"><Search size={19} /></span>
-        <input
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          placeholder="Search for a place or service..."
-        />
-        <button className="locate" onClick={() => navigator.geolocation?.getCurrentPosition(
-          pos => mapRef.current?.flyTo([pos.coords.latitude, pos.coords.longitude], 14),
-        )}>
-          <LocateFixed size={17} />
-        </button>
-      </section>
-    </div>
-      {selected && (
-        <section className="service-popup">
-          <button className="service-close" onClick={() => setSelected(null)}><X size={18} /></button>
-          <div className="service-title">
-            <span className="service-icon" style={{ background: categories.find(c => c.name === selected.category)?.color }}>
-              {categoryIcon(selected.category, 18)}
-            </span>
-            <div><h2>{selected.name}</h2><p>{selected.category}</p></div>
-          </div>
-          <div className="service-info">
-            <p><MapPinned size={17} />{selected.area}, Cape Town</p>
-            <p><Clock3 size={17} />{selected.category === 'Hospitals' ? 'Open 24 hours' : '08:00 – 16:30'}</p>
-            <p><Phone size={17} />021 400 0000</p>
-          </div>
-        </section>
-      )}
-
-      <button className="panel-trigger legend-trigger" onClick={() => setLegendOpen(true)}>
-        <MapPinned size={17} />Legend
-      </button>
-
-      {legendOpen && (
-        <aside className="legend popup-panel">
-          <button className="close-panel" onClick={() => setLegendOpen(false)}><X size={17} /></button>
-          <h2>Legend</h2>
-          {categories.map(item => (
-            <button
-              key={item.name}
-              className={active === item.name ? 'active' : ''}
-              onClick={() => { setActive(active === item.name ? null : item.name); setSelected(null); }}
-            >
-              <i style={{ background: item.color }}>{categoryIcon(item.name)}</i>{item.name}
-            </button>
-          ))}
-        </aside>
-      )}
-
-      <div className="leaflet-zoom">
-        <button onClick={() => mapRef.current?.zoomIn()}><Plus size={18} /></button>
-        <button onClick={() => mapRef.current?.zoomOut()}><Minus size={18} /></button>
-      </div>
-    </main>
-  );
-}
-
-function ProtectedDashboard() {
-  const accessToken = localStorage.getItem('servicefinder_access_token');
-  return accessToken ? <Dashboard /> : <Navigate to="/login" replace />;
-}
-
-export default function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<CapeGuide />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="/signup" element={<Signup />} />
-        <Route path="/forgot-password" element={<ForgotPassword />} />
-        <Route path="/reset-password" element={<ResetPassword />} />
-        <Route path="/dashboard" element={<ProtectedDashboard />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
-    </BrowserRouter>
-  );
 }
 </file>
 
@@ -4006,6 +2489,1431 @@ export async function request<T = any>(
 
 
   
+}
+</file>
+
+<file path="frontend/src/styles/index.css">
+@import './variables.css';
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  font-family: 'DM Sans', sans-serif;
+  color: #523c28;
+  background: #e9d5a4;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+.auth-page {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(320px, .7fr) minmax(620px, 1fr);
+  background:
+    linear-gradient(105deg, rgba(4, 28, 49, .7) 0%, rgba(10, 72, 102, .28) 52%, rgba(220, 237, 246, .28) 100%),
+    url('../assets/service1.jpg') center / cover;
+}
+
+.auth-story {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 100vh;
+  padding: 50px clamp(40px, 7vw, 108px);
+  color: #fff;
+  overflow: hidden;
+}
+
+.story-content {
+  position: relative;
+  z-index: 1;
+  max-width: 560px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 13px;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.brand-mark {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 50% 50% 50% 8px;
+  color: #fff;
+  background: #005a8a;
+  transform: rotate(-45deg);
+  box-shadow: 0 6px 18px rgba(5, 128, 192, .35);
+}
+
+.brand-mark span {
+  font-size: 37px;
+  line-height: 1;
+  transform: rotate(45deg);
+}
+
+.brand-name {
+  font-size: clamp(24px, 2.5vw, 34px);
+  letter-spacing: -.7px;
+}
+
+.brand-name span,
+.story-copy strong {
+  color: #08aef0;
+}
+
+.story-copy {
+  margin-top: clamp(76px, 12vh, 132px);
+}
+
+.eyebrow {
+  margin: 0 0 22px;
+  font-size: 10px;
+  letter-spacing: 4px;
+  opacity: .9;
+}
+
+.eyebrow span {
+  margin: 0 5px;
+  color: #08aef0;
+}
+
+.story-copy h1 {
+  max-width: 460px;
+  margin: 0;
+  font-size: clamp(35px, 4.1vw, 58px);
+  line-height: 1.08;
+  letter-spacing: -1.5px;
+  font-weight: 700;
+}
+
+.story-copy h1 strong {
+  display: block;
+}
+
+.story-description {
+  max-width: 410px;
+  margin: 26px 0 0;
+  font-size: 16px;
+  line-height: 1.48;
+  color: rgba(255, 255, 255, .9);
+}
+
+.story-features {
+  display: flex;
+  gap: 0;
+  margin-top: 63px;
+}
+
+.story-feature {
+  min-width: 120px;
+  padding: 0 23px;
+  border-left: 1px solid rgba(255, 255, 255, .3);
+  display: flex;
+  flex-direction: column;
+}
+
+.story-feature:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.feature-icon {
+  margin-bottom: 8px;
+  color: #08aef0;
+  font-size: 31px;
+  line-height: 1;
+}
+
+.story-feature strong {
+  font-size: 15px;
+}
+
+.story-feature small {
+  margin-top: 3px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, .72);
+}
+
+.auth-panel {
+  display: grid;
+  place-items: center;
+  padding: 48px clamp(24px, 5vw, 120px);
+  background: transparent;
+}
+
+.login-card {
+  position: relative;
+  width: min(100%, 560px);
+  padding: 30px clamp(29px, 4vw, 58px) 36px;
+  border: 1px solid rgba(255, 255, 255, .8);
+  border-left: 5px solid #08aef0;
+  border-radius: 8px 30px 8px 30px;
+  background: rgba(245, 249, 252, .91);
+  box-shadow: 18px 24px 0 rgba(3, 41, 66, .14), 0 24px 60px rgba(13, 48, 71, .22);
+}
+
+.login-card::before {
+  content: '';
+  position: absolute;
+  top: 20px;
+  right: 25px;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(8, 174, 240, .35);
+  border-radius: 50%;
+  box-shadow: 0 0 0 7px rgba(8, 174, 240, .08), 0 0 0 14px rgba(8, 174, 240, .04);
+  pointer-events: none;
+}
+
+.panel-kicker {
+  margin: 0 0 10px;
+  color: #1b91d0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
+
+.login-heading h2 {
+  margin: 0;
+  color: #102d4e;
+  font-size: clamp(28px, 3vw, 38px);
+  letter-spacing: -1px;
+}
+
+.login-heading p {
+  margin: 6px 0 24px;
+  color: #6a819a;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.form-error {
+  margin: 0 0 13px;
+  padding: 9px 11px;
+  border: 1px solid #f1b7b7;
+  border-radius: 6px;
+  color: #9a3030;
+  background: #fff2f2;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.form-success {
+  margin: 0 0 13px;
+  padding: 9px 11px;
+  border: 1px solid #add9bd;
+  border-radius: 6px;
+  color: #216b43;
+  background: #effaf3;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.field-label {
+  position: absolute;
+  width: 5px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.auth-form-card form {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.auth-input-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 13px;
+}
+
+.auth-input {
+  width: 100%;
+  height: 45px;
+  padding: 0 13px;
+  border: 1px solid #dbe5ee;
+  border-radius: 6px;
+  outline: 0;
+  color: #173653;
+  background: rgba(255, 255, 255, .76);
+}
+
+.auth-input:focus {
+  border-color: #159feb;
+  box-shadow: 0 0 0 3px rgba(21, 159, 235, .14);
+}
+
+.auth-input::placeholder {
+  color: #91a6ba;
+  font-size: 11px;
+}
+
+.input-wrap {
+  position: relative;
+  margin-bottom: 13px;
+}
+
+.input-wrap input {
+  width: 100%;
+  height: 45px;
+  padding: 0 40px;
+  border: 1px solid #dbe5ee;
+  border-radius: 6px;
+  outline: 0;
+  color: #173653;
+  background: rgba(255, 255, 255, .76);
+  transition: border-color .2s, box-shadow .2s;
+}
+
+.input-wrap input:focus {
+  border-color: #159feb;
+  box-shadow: 0 0 0 3px rgba(21, 159, 235, .14);
+}
+
+.input-wrap input::placeholder {
+  color: #91a6ba;
+  font-size: 11px;
+}
+
+.input-icon {
+  position: absolute;
+  top: 13px;
+  left: 12px;
+  z-index: 1;
+  color: #173653;
+  font-size: 17px;
+}
+
+.visibility-button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 42px;
+  height: 45px;
+  border: 0;
+  color: #173653;
+  background: transparent;
+  cursor: pointer;
+}
+
+.form-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 1px 0 16px;
+  color: #57718d;
+  font-size: 10px;
+}
+
+.form-options a,
+.signup-prompt a {
+  color: #007fd1;
+  text-decoration: none;
+}
+
+.remember-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.remember-option input {
+  accent-color: #087fd9;
+}
+
+.submit-button {
+  width: 100%;
+  height: 44px;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #fff;
+  background: linear-gradient(100deg, #0967c5, #0798f5);
+  box-shadow: 0 8px 14px rgba(0, 123, 215, .18);
+  transition: transform .2s, box-shadow .2s;
+}
+
+.submit-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 20px rgba(0, 123, 215, .27);
+}
+
+.submit-button:disabled {
+  cursor: wait;
+  opacity: .72;
+}
+
+.submit-button span {
+  margin-left: 12px;
+  font-size: 20px;
+  vertical-align: -1px;
+}
+
+.signup-prompt {
+  margin: 23px 0 0;
+  color: #536d86;
+  text-align: center;
+  font-size: 10px;
+}
+
+.signup-prompt a {
+  font-weight: 700;
+}
+
+@media (max-width: 820px) {
+  .auth-page {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-story {
+    min-height: 145px;
+    height: 145px;
+    padding: 25px 28px 45px;
+    align-items: flex-start;
+  }
+
+  .story-copy,
+  .story-features {
+    display: none;
+  }
+
+  .auth-panel {
+    min-height: calc(100vh - 145px);
+    padding: 14px 20px 24px;
+    align-items: start;
+  }
+
+  .login-card {
+    margin-top: -42px;
+  }
+}
+
+@media (max-width: 430px) {
+  .auth-story {
+    min-height: 125px;
+    height: 125px;
+    padding: 22px 22px 40px;
+  }
+
+  .brand-mark {
+    width: 40px;
+    height: 40px;
+  }
+
+  .brand-mark span {
+    font-size: 30px;
+  }
+
+  .brand-name {
+    font-size: 26px;
+  }
+
+  .auth-panel {
+    min-height: calc(100vh - 125px);
+    padding: 12px 14px 18px;
+  }
+
+  .login-card {
+    padding: 29px 20px 25px;
+  }
+
+  .auth-input-row {
+    grid-template-columns: 1fr;
+    gap: 13px;
+  }
+}
+
+.guide-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  background: #f7e9b7;
+  isolation: isolate;
+}
+
+.map-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.navbar {
+  position: relative;
+  z-index: 2000;
+  flex-shrink: 0;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  background: linear-gradient(90deg, rgba(244, 209, 140, .96), rgba(235, 184, 103, .96));
+  border-bottom: 1px solid #8c6337;
+  box-shadow: 0 2px 8px rgba(114, 80, 42, .25);
+  font-family: 'DM Sans', sans-serif;
+}
+
+.navbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: #52391f;
+  font: 600 20px 'Cormorant SC', serif;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.navbar-brand strong {
+  color: #005a8a;
+}
+
+.navbar-links {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+}
+
+.navbar-links a {
+  text-decoration: none;
+  color: #5d4327;
+  font-size: 14px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  transition: color .2s;
+}
+
+.navbar-links a:hover {
+  color: #005a8a;
+}
+
+.navbar-cta {
+  padding: 9px 20px;
+  border: 1px solid #65431f;
+  background: #65421f;
+  color: #fce5ae;
+  font: 700 11px Georgia, serif;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background .2s, transform .2s;
+}
+
+.navbar-cta:hover {
+  background: #005a8a;
+  border-color: #005a8a;
+  transform: translateY(-1px);
+}
+
+.navbar-toggle {
+  display: none;
+  border: 0;
+  background: transparent;
+  color: #52391f;
+  cursor: pointer;
+}
+
+.masthead {
+  position: absolute;
+  z-index: 1000;
+  top: 11px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 318px;
+  text-align: center;
+  padding: 8px 14px 10px;
+  background: linear-gradient(90deg, #edc57e, #f5d28d, #e8bb70);
+  border: 1px solid #875e32;
+  outline: 3px double #f9e1a9;
+  box-shadow: 0 4px 8px #6d4a2754;
+  text-transform: uppercase;
+}
+
+.masthead h1 {
+  margin: 0;
+  font: 600 21px 'Cormorant SC';
+  letter-spacing: 4px;
+}
+
+.masthead p {
+  margin: 1px 0 0;
+  font: 600 12px 'Cormorant SC';
+  letter-spacing: 3px;
+}
+
+.search-panel {
+  position: absolute;
+  z-index: 1000;
+  top: 79px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(672px, 53vw);
+  height: 62px;
+  display: flex;
+  align-items: center;
+  padding: 8px;
+  gap: 12px;
+  background: linear-gradient(90deg, #f8d188, #ebbd71);
+  border: 1px solid #c59357;
+  box-shadow: 0 3px 7px #72502a66;
+}
+
+.glass {
+  display: flex;
+  align-items: center;
+  font-size: 29px;
+  color: #9a7044;
+  transform: rotate(-20deg);
+}
+
+.search-panel input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #63482e;
+  font-size: 14px;
+}
+
+.search-panel input::placeholder {
+  color: #9b7952;
+}
+
+.search-button {
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font: 700 11px Georgia;
+  padding: 11px 16px;
+  border: 1px solid #65431f;
+  color: #fce5ae;
+  background: #65421f;
+  cursor: pointer;
+}
+
+.locate {
+  width: 32px;
+  height: 39px;
+  border: 1px solid #9e784e;
+  color: #5b442c;
+  background: #f8e5b8;
+  font-size: 21px;
+  cursor: pointer;
+}
+
+.about,
+.legend {
+  position: absolute;
+  z-index: 1000;
+  border: 1px solid #b48750;
+  outline: 2px double #f6d994;
+  background: linear-gradient(145deg, rgba(245, 209, 144, .92), rgba(235, 184, 103, .9));
+  box-shadow: 1px 2px 7px #86602a4a;
+}
+
+.about {
+  bottom: 12px;
+  left: 13px;
+  width: 289px;
+  padding: 17px 17px 15px;
+}
+
+.about h2,
+.legend h2 {
+  margin: 0 0 20px;
+  text-align: center;
+  text-transform: uppercase;
+  font: 600 16px 'Cormorant SC';
+  letter-spacing: 4px;
+}
+
+.about p {
+  margin: 0;
+  font: 14px/1.65 'Playfair Display';
+}
+
+.motto {
+  border-top: 1px solid #bd9460;
+  margin-top: 11px;
+  padding-top: 10px;
+  text-align: center;
+  color: #8a653d;
+  font: italic 14px/1.4 'Playfair Display';
+}
+
+.legend {
+  right: 14px;
+  bottom: 12px;
+  width: 291px;
+  padding: 19px 25px;
+}
+
+.legend h2 {
+  margin-bottom: 18px;
+}
+
+.legend button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  border: 0;
+  padding: 5px 0;
+  text-align: left;
+  background: transparent;
+  color: #503921;
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.legend button:hover,
+.legend button.active {
+  background: rgba(116, 75, 35, .12);
+}
+
+.legend i {
+  width: 16px;
+  height: 20px;
+  margin-right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #e9d4a2;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  color: #fff6d2;
+  box-shadow: 0 0 0 1px #6d4e2b;
+  font: 11px Georgia;
+}
+
+.legend i svg {
+  transform: rotate(45deg);
+}
+
+.you-are {
+  margin-top: 7px;
+  padding-top: 10px !important;
+  border-top: 1px solid #c99a61 !important;
+}
+
+.you-are i {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  color: #dab05f !important;
+  transform: none !important;
+  font-size: 17px !important;
+}
+
+.you-are i svg {
+  transform: none;
+}
+
+.notice {
+  position: absolute;
+  z-index: 1000;
+  top: 149px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  background: #6b4928;
+  color: #ffedb9;
+  box-shadow: 0 2px 5px #5b3d2c66;
+  font-size: 13px;
+}
+
+.leaflet-map {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: #f4e4af;
+}
+
+.leaflet-map .leaflet-tile {
+  filter: sepia(.55) saturate(.65) brightness(1.12) contrast(.86);
+}
+
+.leaflet-map .leaflet-control-attribution {
+  background: rgba(249, 232, 185, .78) !important;
+  color: #755536;
+  font-size: 10px;
+}
+
+.leaflet-zoom {
+  position: absolute;
+  z-index: 1000;
+  left: 9px;
+  top: 9px;
+  display: grid;
+}
+
+.leaflet-zoom button {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #9a8160;
+  background: #f6e5bf;
+  color: #5d452e;
+  font-size: 20px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.leaflet-zoom button + button {
+  border-top: 0;
+}
+
+.cape-marker-wrap {
+  background: none !important;
+  border: 0 !important;
+}
+
+.cape-marker {
+  width: 30px;
+  height: 30px;
+  border: 3px solid #6b4a2c;
+  border-radius: 50% 50% 50% 0;
+  background: #eee0af;
+  transform: rotate(-45deg);
+  box-shadow:
+    0 2px 0 #6a482a,
+    0 0 0 3px #d7b777;
+}
+
+.cape-marker span {
+  position: absolute;
+  inset: 3px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  transform: rotate(45deg);
+  font: 700 13px Georgia;
+  color: #fff6d8;
+  background: var(--marker);
+}
+
+.leaflet-tooltip {
+  border: 1px solid #8d6337 !important;
+  border-radius: 0 !important;
+  background: #f7d990 !important;
+  color: #553b24 !important;
+  box-shadow: 0 2px 6px #5f402c66 !important;
+  font: 12px 'DM Sans', sans-serif !important;
+}
+
+.leaflet-tooltip:before {
+  border-top-color: #8d6337 !important;
+}
+
+.leaflet-tooltip strong {
+  font-family: 'Playfair Display';
+}
+
+.panel-trigger {
+  position: absolute;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid #8c6337;
+  outline: 2px double #f6d994;
+  background: linear-gradient(145deg, #f4d18c, #e6b466);
+  color: #52391f;
+  box-shadow: 1px 2px 7px #86602a70;
+  text-transform: uppercase;
+  font: 600 12px 'Cormorant SC';
+  letter-spacing: 1.8px;
+  cursor: pointer;
+}
+
+.panel-trigger:hover {
+  background: #f8d991;
+}
+
+.about-trigger {
+  left: 14px;
+  bottom: 14px;
+}
+
+.legend-trigger {
+  right: 14px;
+  bottom: 14px;
+}
+
+.popup-panel {
+  z-index: 1200 !important;
+  animation: panel-pop .2s ease-out;
+}
+
+.close-panel,
+.legend .close-panel {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: 29px;
+  height: 29px;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0 !important;
+  background: transparent !important;
+  color: #624422;
+  cursor: pointer;
+}
+
+.close-panel:hover,
+.legend .close-panel:hover {
+  background: rgba(103, 67, 31, .12) !important;
+}
+
+@keyframes panel-pop {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.service-popup {
+  position: absolute;
+  z-index: 1150;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  width: min(455px, calc(100% - 24px));
+  padding: 17px 18px 18px;
+  background: linear-gradient(135deg, #f4d48f, #e8b866);
+  border: 1px solid #8f6335;
+  outline: 3px double #f8dfa8;
+  box-shadow: 2px 3px 9px #5f43277a;
+  animation: panel-pop .2s ease-out;
+}
+
+.service-close {
+  position: absolute;
+  right: 12px;
+  top: 11px;
+  border: 0;
+  background: transparent;
+  color: #664526;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.service-title {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 25px 12px 0;
+  border-bottom: 1px solid #c39358;
+}
+
+.service-icon {
+  width: 28px;
+  height: 35px;
+  display: grid;
+  place-items: center;
+  border: 3px solid #694927;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  box-shadow:
+    0 1px 0 #6b482a,
+    0 0 0 2px #dfc181;
+  color: #fff6d8;
+}
+
+.service-icon svg {
+  transform: rotate(45deg);
+}
+
+.service-title h2 {
+  margin: 0;
+  text-transform: uppercase;
+  font: 600 18px 'Cormorant SC';
+  letter-spacing: 2px;
+}
+
+.service-title p {
+  margin: 2px 0 0;
+  text-transform: uppercase;
+  color: #85603a;
+  font: 600 11px 'Cormorant SC';
+  letter-spacing: 2px;
+}
+
+.service-info {
+  padding: 11px 0 8px;
+}
+
+.service-info p {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 5px 0;
+  color: #594027;
+  font: 14px/1.35 'DM Sans';
+}
+
+.service-info svg {
+  color: #987047;
+  flex: none;
+}
+
+.service-actions {
+  display: flex;
+  gap: 8px;
+  border-top: 1px solid #c39358;
+  padding-top: 11px;
+}
+
+.service-actions button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 33px;
+  padding: 0 13px;
+  border: 1px solid #b78955;
+  background: #f7e7bd;
+  color: #674a2e;
+  text-transform: uppercase;
+  font: 600 11px 'Cormorant SC';
+  letter-spacing: 1.5px;
+  cursor: pointer;
+}
+
+.service-actions .directions {
+  background: #714621;
+  color: #ffe6af;
+  border-color: #70441f;
+}
+
+.service-actions .saved {
+  background: #dfb162;
+  color: #5b3b1d;
+}
+
+@media (max-width: 780px) {
+  .navbar {
+    padding: 12px 18px;
+  }
+
+  .navbar-toggle {
+    display: block;
+  }
+
+  .navbar-links {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding: 0;
+    background: rgba(244, 209, 140, .98);
+    border-bottom: 1px solid #8c6337;
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height .25s ease;
+  }
+
+  .navbar-links.open {
+    max-height: 320px;
+  }
+
+  .navbar-links a,
+  .navbar-cta {
+    padding: 14px 22px;
+    border-radius: 0;
+    border: 0;
+    border-top: 1px solid rgba(140, 99, 55, .3);
+    text-align: left;
+    width: 100%;
+  }
+
+  .search-panel {
+    width: calc(100% - 84px);
+    top: 74px;
+  }
+
+  .legend {
+    display: none;
+  }
+
+  .about {
+    width: min(289px, calc(100% - 24px));
+  }
+
+  .masthead {
+    width: 270px;
+  }
+
+  .service-popup {
+    bottom: 58px;
+  }
+}
+
+@media (max-width: 520px) {
+  .service-popup {
+    bottom: 9px;
+    padding: 14px;
+  }
+
+  .service-title h2 {
+    font-size: 15px;
+  }
+
+  .service-actions {
+    gap: 4px;
+  }
+
+  .service-actions button {
+    padding: 0 8px;
+    font-size: 10px;
+  }
+}
+</file>
+
+<file path="frontend/src/App.tsx">
+import Login from './pages/Login';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import Signup from './pages/Signup';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
+import Dashboard from './pages/Dashboard';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import {
+  Accessibility, BookOpen, Bookmark, Bus, Clock3, Flame, Globe,
+  GraduationCap, Heart, Hospital, House, Landmark, Library, LocateFixed,
+  MapPinned, Minus, Navigation, Phone, Pill, Plus, Search, Shield,
+  ShoppingBag, Smile, Stethoscope, X,
+} from 'lucide-react';
+import Navbar from './components/common/Navbar';
+import { useServices } from './hooks/useServices';
+import type { Service } from './types/service.types';
+
+declare const L: any;
+
+type Category = string;
+type Place = Omit<Service, 'category'> & { category: Category; lat: number; lng: number };
+type CategoryItem = { name: Category; color: string };
+
+const categoryColors = ['#b94b3c', '#4f876f', '#cb8c38', '#3b77a2', '#375f93', '#81528d', '#77909c', '#815c54', '#bd6240', '#75664b', '#a45b83', '#847337', '#43858a'];
+const categoryColor = (category: string) =>
+  categoryColors[Math.max(category.length - 1, 0) % categoryColors.length];
+
+const getCoordinates = (location: Service['location']): [number, number] | null => {
+  if (location && typeof location === 'object' && location.coordinates) return location.coordinates;
+  if (typeof location !== 'string') return null;
+  const match = location.match(/(?:SRID=\d+;)?\s*POINT\s*\(\s*(-?[\d.]+)\s+(-?[\d.]+)\s*\)/i);
+  if (match) return [Number(match[1]), Number(match[2])];
+
+  if (!/^[0-9a-f]+$/i.test(location) || location.length < 34) return null;
+  const bytes = new Uint8Array(location.match(/.{2}/g)!.map((pair) => parseInt(pair, 16)));
+  const littleEndian = bytes[0] === 1;
+  const view = new DataView(bytes.buffer);
+  const geometryType = view.getUint32(1, littleEndian);
+  const coordinateOffset = 5 + (geometryType & 0x20000000 ? 4 : 0);
+  if ((geometryType & 0xff) !== 1 || bytes.length < coordinateOffset + 16) return null;
+  return [
+    view.getFloat64(coordinateOffset, littleEndian),
+    view.getFloat64(coordinateOffset + 8, littleEndian),
+  ];
+};
+
+const toPlace = (service: Service): Place | null => {
+  const coordinates = getCoordinates(service.location);
+  if (!coordinates || coordinates.some((coordinate) => !Number.isFinite(coordinate))) return null;
+  return {
+    ...service,
+    category: service.category?.name ?? service.type ?? 'Service',
+    lat: coordinates[1],
+    lng: coordinates[0],
+  };
+};
+
+const categoryIcon = (category: Category, size = 14) => {
+  const props = { size, strokeWidth: 2.2 };
+  switch (category) {
+    case 'Clinic':         return <Stethoscope    {...props} />;
+    case 'Library':        return <Library        {...props} />;
+    case 'Shelter':        return <House          {...props} />;
+    case 'Hospital':       return <Hospital       {...props} />;
+    case 'Police station': return <Shield         {...props} />;
+    case 'Pharmacy':       return <Pill           {...props} />;
+    case 'Dentist':        return <Smile          {...props} />;
+    case 'Fire station':   return <Flame          {...props} />;
+    case 'Home Affairs':   return <Landmark       {...props} />;
+    case 'School':         return <GraduationCap  {...props} />;
+    default:               return <MapPinned      {...props} />;
+  }
+};
+
+function LeafletMap({
+  places, selected, onSelect, mapRef,
+}: {
+  places: Place[];
+  selected: Place | null;
+  onSelect: (place: Place) => void;
+  mapRef: React.MutableRefObject<any>;
+}) {
+  const root = useRef<HTMLDivElement>(null);
+  const layer = useRef<any>(null);
+
+  useEffect(() => {
+    if (!root.current || !L) return;
+    const map = L.map(root.current, { zoomControl: false, attributionControl: true })
+      .setView([-33.96, 18.5], 11);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap contributors',
+    }).addTo(map);
+    mapRef.current = map;
+    layer.current = L.layerGroup().addTo(map);
+    // Force Leaflet to recalculate size once the flex layout settles
+    setTimeout(() => map.invalidateSize(), 0);
+    return () => map.remove();
+  }, [mapRef]);
+
+  useEffect(() => {
+    if (!layer.current) return;
+    layer.current.clearLayers();
+    places.forEach((place) => {
+      const color = categoryColor(place.category);
+      const icon = L.divIcon({
+        className: 'cape-marker-wrap',
+        html: `<div class="cape-marker" style="--marker:${color}"><span>${renderToStaticMarkup(categoryIcon(place.category, 14))}</span></div>`,
+        iconSize: [34, 42],
+        iconAnchor: [17, 42],
+      });
+      const marker = L.marker([place.lat, place.lng], { icon }).addTo(layer.current);
+      marker.bindTooltip(`<strong>${place.name}</strong><br>${place.category}`, { direction: 'top', offset: [0, -38] });
+      marker.on('click', () => onSelect(place));
+    });
+    if (places.length > 0) {
+      mapRef.current?.fitBounds(
+        L.latLngBounds(places.map((place) => [place.lat, place.lng])),
+        { padding: [48, 48], maxZoom: 12 },
+      );
+    }
+  }, [places, selected, onSelect]);
+
+  return <div className="leaflet-map" ref={root} />;
+}
+
+function CapeGuide() {
+  const { services,   loading, error } = useServices();
+  const [query,       setQuery] =       useState('');
+  const [active,      setActive] =      useState<Category | null>(null);
+  const [selected,    setSelected] =    useState<Place | null>(null);
+  const [notice,      setNotice] =      useState('');
+  const [aboutOpen,   setAboutOpen] =   useState(false);
+  const [legendOpen,  setLegendOpen] =  useState(false);
+  const [saved,       setSaved] =       useState<string[]>([]);
+  const mapRef =      useRef<any>(null);
+
+  const places = useMemo(
+    () => services.map(toPlace).filter((place): place is Place => place !== null),
+    [services],
+  );
+
+  const categories = useMemo<CategoryItem[]>(
+    () => Array.from(new Set(places.map((place) => place.category)))
+      .map((name) => ({ name, color: categoryColor(name) })),
+    [places],
+  );
+
+  const visible = useMemo(
+    () => places.filter((p) =>
+      (!active || p.category === active) &&
+      `${p.name} ${p.formatted_address ?? ''} ${p.category}`.toLowerCase().includes(query.toLowerCase()),
+    ),
+    [active, places, query],
+  );
+
+  const selectPlace = useCallback((place: Place) => {
+    setSelected(place);
+    mapRef.current?.flyTo([place.lat, place.lng], 15, { animate: true, duration: 0.7 });
+  }, []);
+
+  const search = () => {
+    const first = visible[0];
+    if (first) selectPlace(first);
+    setNotice(first ? `${visible.length} place${visible.length === 1 ? '' : 's'} found` : 'No places found');
+  };
+
+  const locate = () => navigator.geolocation?.getCurrentPosition(
+    (pos) => {
+      mapRef.current?.flyTo([pos.coords.latitude, pos.coords.longitude], 14);
+      setNotice('Showing your current location.');
+    },
+    () => setNotice('We could not access your location.'),
+  );
+
+  return (
+    <main className="guide-shell">
+      <Navbar />
+
+      <div className="map-stage">
+        <LeafletMap places={visible} selected={selected} onSelect={selectPlace} mapRef={mapRef} />
+
+        <header className="masthead">
+          <h1>The Cape Guide</h1>
+          <p>Find. Navigate. Connect.</p>
+        </header>
+
+        <section className="search-panel">
+          <span className="glass"><Search size={19} /></span>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && search()}
+            placeholder="Search for a place or service..."
+          />
+          <button className="search-button" onClick={search}>Search</button>
+          <button className="locate" title="Use my location" onClick={locate}>
+            <LocateFixed size={17} />
+          </button>
+        </section>
+
+        {loading && <div className="notice">Loading services...</div>}
+        {error && <div className="notice">{error}</div>}
+        {notice && !loading && <div className="notice">{notice}</div>}
+
+        {selected && (
+          <section className="service-popup">
+            <button className="service-close" aria-label="Close service" onClick={() => setSelected(null)}>
+              <X size={18} />
+            </button>
+            <div className="service-title">
+              <span className="service-icon" style={{ background: categories.find((c) => c.name === selected.category)?.color }}>
+                {categoryIcon(selected.category, 18)}
+              </span>
+              <div>
+                <h2>{selected.name}</h2>
+                <p>{selected.category}</p>
+              </div>
+            </div>
+            <div className="service-info">
+              <p><MapPinned size={17} /><span>{selected.formatted_address ?? 'Address unavailable'}</span></p>
+              {selected.opening_hours && <p><Clock3 size={17} />{selected.opening_hours}</p>}
+              {selected.phone && <p><Phone size={17} />{selected.phone}</p>}
+              {selected.website && <p><Globe size={17} /><a href={selected.website} target="_blank" rel="noreferrer">Visit website</a></p>}
+              {selected.wheelchair && <p><Accessibility size={17} />Wheelchair access: {selected.wheelchair}</p>}
+            </div>
+            <div className="service-actions">
+              <button className="directions" onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${selected.lat},${selected.lng}`, '_blank', 'noopener,noreferrer')}>
+                <Navigation size={14} /> Get Directions
+              </button>
+              <button
+                className={saved.includes(selected.name) ? 'saved' : ''}
+                onClick={() => setSaved(saved.includes(selected.name) ? saved.filter((name) => name !== selected.name) : [...saved, selected.name])}
+              >
+                <Bookmark size={15} /> {saved.includes(selected.name) ? 'Saved' : 'Save'}
+              </button>
+            </div>
+          </section>
+        )}
+
+        <button className="panel-trigger about-trigger" onClick={() => setAboutOpen(true)}>
+          <BookOpen size={17} /> About the Guide
+        </button>
+        <button className="panel-trigger legend-trigger" onClick={() => setLegendOpen(true)}>
+          <MapPinned size={17} /> Legend
+        </button>
+
+        {aboutOpen && (
+          <aside className="about popup-panel">
+            <button className="close-panel" aria-label="Close about" onClick={() => setAboutOpen(false)}><X size={17} /></button>
+            <h2>About the Cape<br />Guide</h2>
+            <p>
+              The Cape Guide is a map-based service finder designed to help people
+              discover useful public services across Cape Town. Search, explore
+              and navigate to the services you need — all from one map.
+            </p>
+            <div className="motto">Every road leads somewhere.<br />Every service helps someone.</div>
+          </aside>
+        )}
+
+        {legendOpen && (
+          <aside className="legend popup-panel">
+            <button className="close-panel" aria-label="Close legend" onClick={() => setLegendOpen(false)}><X size={17} /></button>
+            <h2>Legend</h2>
+            {categories.map((item) => (
+              <button
+                key={item.name}
+                className={active === item.name ? 'active' : ''}
+                onClick={() => { setActive(active === item.name ? null : item.name); setSelected(null); }}
+              >
+                <i style={{ background: item.color }}>{categoryIcon(item.name)}</i>
+                {item.name}
+              </button>
+            ))}
+            <button className="you-are" onClick={locate}>
+              <i><MapPinned size={16} /></i>
+              You Are Here
+            </button>
+          </aside>
+        )}
+
+        <div className="leaflet-zoom">
+          <button aria-label="Zoom in" onClick={() => mapRef.current?.zoomIn()}><Plus size={18} /></button>
+          <button aria-label="Zoom out" onClick={() => mapRef.current?.zoomOut()}><Minus size={18} /></button>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function ProtectedDashboard() {
+  const accessToken = localStorage.getItem('servicefinder_access_token');
+  return accessToken ? <Dashboard /> : <Navigate to="/login" replace />;
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<CapeGuide />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/signup" element={<Signup />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/dashboard" element={<ProtectedDashboard />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
 }
 </file>
 
